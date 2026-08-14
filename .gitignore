@@ -1,0 +1,34 @@
+# local config / secrets
+config.json
+config.secret.json
+
+# local data and logs
+data/
+logs/
+*.log
+bot_error.txt
+bot_output.txt
+
+# python runtime and vendored deps
+python/
+libs/
+__pycache__/
+*.pyc
+
+# local tools, backups, release staging
+.tools/
+backup/
+release/
+docs/
+debug_*.txt
+start_debug*.txt
+napcat_loader_out.txt
+redirect_test.txt
+_test*.txt
+_test2.txt
+python-*.exe
+
+# local-only launchers
+run.bat
+启动爱弥斯.bat
+爱弥斯后台.bat
