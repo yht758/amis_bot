@@ -1,8 +1,0 @@
-{
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat",
-    "bot_qq": 123456789,
-    "respond_to_groups": false,
-    "allowed_users": [],
-    "admin_users": []
-}

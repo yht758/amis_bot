@@ -4,5 +4,14 @@
     "bot_qq": 123456789,
     "respond_to_groups": false,
     "allowed_users": [],
-    "admin_users": []
+    "admin_users": [],
+    "max_history": 40,
+    "summary_enabled": true,
+    "summary_threshold": 24,
+    "summary_keep_recent": 8,
+    "streaming_enabled": true,
+    "chunking_enabled": true,
+    "chunk_min_delay": 1.0,
+    "chunk_max_delay": 2.0,
+    "persona": "aemeath"
 }

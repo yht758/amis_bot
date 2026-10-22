@@ -1,34 +1,56 @@
-# local config / secrets
+# ---- 私密配置与密钥（绝不提交） ----
+.env
+.env.*
+!.env.example
 config.json
 config.secret.json
+*.pem
+*.key
 
-# local data and logs
+# ---- 运行时数据与日志 ----
 data/
 logs/
 *.log
-bot_error.txt
-bot_output.txt
+*.sqlite3
 
-# python runtime and vendored deps
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/.tmp_state/
+tests/.tmp_logs/
+
+# ---- 本地便携运行时 / 依赖 ----
 python/
 libs/
-__pycache__/
-*.pyc
 
-# local tools, backups, release staging
+# ---- 本地工具、备份、发布产物 ----
 .tools/
 backup/
 release/
-docs/
-debug_*.txt
-start_debug*.txt
-napcat_loader_out.txt
-redirect_test.txt
-_test*.txt
-_test2.txt
-python-*.exe
+*.zip
+*.exe
 
-# local-only launchers
+# ---- 本地说明文档（含个人信息，不提交） ----
+docs/*.docx
+docs/*.pdf
+
+# ---- 旧版启动脚本（已迁移到 scripts/） ----
 run.bat
+启动机器人.bat
 启动爱弥斯.bat
 爱弥斯后台.bat
+
+# ---- 调试 / 临时文件 ----
+debug_*.txt
+start_debug*.txt
+*_output.txt
+_test*.txt
+bot_error.txt
+napcat_loader_out.txt
+redirect_test.txt
+python-*.exe
