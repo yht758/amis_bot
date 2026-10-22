@@ -1064,6 +1064,7 @@ input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
 .hero-status-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 3px; }
 .hero-status-line h2 { font-size: 27px; font-weight: 680; letter-spacing: -.01em; line-height: 1.2; }
 .hero-status-sub { font-size: 12px; color: var(--muted); }
+.hero-status-sub.is-warn { color: var(--warn); }
 
 .hero-uptime { display: flex; flex-direction: column; gap: 3px; flex: none; padding-right: 4px; }
 .hero-uptime .eyebrow { color: var(--muted); }
@@ -1354,6 +1355,8 @@ input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
 }
 .test-result { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .test-result.is-ok { color: var(--ok); }
+.test-result.is-warn { color: var(--warn); }
+.test-result .test-warning { font-size: 11.5px; opacity: .9; }
 .test-result.is-fail { color: var(--danger); }
 .test-result .latency { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; }
 .test-model-chips { display: flex; gap: 5px; flex-wrap: wrap; }

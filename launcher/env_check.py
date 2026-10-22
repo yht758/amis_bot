@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -28,6 +29,7 @@ _cache: dict = {"ts": 0.0, "checks": []}
 CACHE_TTL = 8.0
 
 _NAPCAT_CANDIDATES = [
+    Path(r"D:\NapCatQQ\bootmain\NapCatWinBootMain.exe"),
     Path(r"D:\NapCatQQ\bootmain\napcat\napimain.exe"),
 ]
 
@@ -35,6 +37,23 @@ _NAPCAT_CANDIDATES = [
 # --------------------------------------------------------------------------
 # 探测工具
 # --------------------------------------------------------------------------
+def _extract_executable(command: str) -> str:
+    """从启动命令中取出第一个可执行文件路径（支持带引号路径）。"""
+    match = re.match(r'^\s*(?:"([^"]+)"|(\S+))', command or "")
+    if not match:
+        return ""
+    return (match.group(1) or match.group(2) or "").strip()
+
+
+def _command_ok(command: str) -> bool:
+    exe = _extract_executable(command)
+    if not exe:
+        return False
+    if Path(exe).exists():
+        return True
+    return shutil.which(exe) is not None
+
+
 def _python_info() -> dict:
     python = find_python()
     if not python or not Path(python).exists():
@@ -110,9 +129,32 @@ def _onebot_info(values: dict) -> dict:
 
 
 def _napcat_info() -> dict:
+    values = resolved_values()
+    port = _parse_port(str(values.get("napcat_ws_url") or ""), 3001)
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.6):
+            return {
+                "status": "ok",
+                "detail": f"OneBot 端口 {port} 已监听，NapCat 可能已在运行",
+                "hint": "",
+            }
+    except OSError:
+        pass
+
     command = str(load_settings().get("napcat_command") or "").strip()
     if command:
-        return {"status": "ok", "detail": command, "hint": ""}
+        if _command_ok(command):
+            return {
+                "status": "warn",
+                "detail": f"已配置启动命令，但 OneBot 端口 {port} 尚未监听",
+                "hint": "点击概览页「启动 NapCat」拉起，或手动启动并确认 WebSocket 端口与 AMIS_NAPCAT_WS_URL 一致",
+            }
+        executable = _extract_executable(command) or command
+        return {
+            "status": "fail",
+            "detail": f"NapCat 启动命令指向的程序不存在：{executable}",
+            "hint": "请在「配置 → 管理台设置」更新路径；新版 NapCat 启动器通常为 D:\\NapCatQQ\\bootmain\\NapCatWinBootMain.exe",
+        }
     for candidate in _NAPCAT_CANDIDATES:
         if candidate.exists():
             return {
@@ -236,6 +278,13 @@ def start_napcat() -> dict:
     command = str(load_settings().get("napcat_command") or "").strip()
     if not command:
         raise RuntimeError("尚未配置 NapCat 启动命令，请先在「配置 → 管理台设置」中填写")
+    if not _command_ok(command):
+        executable = _extract_executable(command) or command
+        raise RuntimeError(
+            f"NapCat 启动命令无效：找不到可执行文件 {executable}。"
+            "请在「配置 → 管理台设置」更新为当前 NapCat 启动器路径"
+            "（新版通常为 D:\\NapCatQQ\\bootmain\\NapCatWinBootMain.exe）"
+        )
     if _napcat_process is not None and _napcat_process.poll() is None:
         return {"already": True, "pid": _napcat_process.pid}
     try:

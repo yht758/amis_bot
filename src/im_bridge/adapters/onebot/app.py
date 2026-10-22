@@ -113,7 +113,7 @@ class OneBotApp:
                     f"[运行] 连接断开：{exc}，{self._retry_delay} 秒后重试",
                 )
                 await asyncio.sleep(self._retry_delay)
-                self._retry_delay = min(self._retry_delay * 2, 60)
+                self._retry_delay = min(self._retry_delay * 2, 15)
             except asyncio.CancelledError:
                 await self.transport.close()
                 raise

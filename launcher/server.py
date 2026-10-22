@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import queue
+import socket
 import sys
 import threading
 import time
@@ -102,11 +103,29 @@ def _invalidate_config_cache() -> None:
 
 
 # ---------------- 业务处理 ----------------
+def _onebot_status() -> dict:
+    """探测 OneBot WebSocket 端口是否可达（bot 只有连上它才能收到消息）。"""
+    values = resolved_values()
+    url = str(values.get("napcat_ws_url") or "ws://127.0.0.1:3001")
+    try:
+        port = urlparse(url).port or 3001
+    except ValueError:
+        port = 3001
+    reachable = False
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            reachable = True
+    except OSError:
+        reachable = False
+    return {"reachable": reachable, "host": "127.0.0.1", "port": port, "url": url}
+
+
 def _state() -> dict:
     return {
         "ok": True,
         "version": APP_VERSION,
         "bot": bot_manager.status(),
+        "onebot": _onebot_status(),
         "server": {"host": "127.0.0.1", "port": _state_port[0]},
         "config": _config_summary(),
     }
@@ -150,49 +169,10 @@ def _save_config(payload: dict) -> dict:
     return {"ok": True, "saved": True, "warnings": warnings}
 
 
-def _test_llm(payload: dict) -> dict:
-    values = resolved_values()
-    key = str(payload.get("api_key") or values.get("api_key") or "").strip()
-    base = str(payload.get("base_url") or values.get("base_url") or "").strip().rstrip("/")
-    model = str(payload.get("model") or values.get("model") or "").strip()
-    if not key:
-        raise ApiError("API Key 为空，无法测试")
-    if not base.startswith(("http://", "https://")):
-        raise ApiError("Base URL 必须以 http:// 或 https:// 开头")
-    if not model:
-        raise ApiError("模型名称为空")
-
-    headers = {"Authorization": f"Bearer {key}"}
-    start = time.time()
-
-    # 1) 优先 /models：能同时验证连通性与鉴权
-    try:
-        request = urllib.request.Request(f"{base}/models", headers=headers)
-        with urllib.request.urlopen(request, timeout=12) as response:
-            raw = response.read()
-        data = json.loads(raw.decode("utf-8", "replace"))
-        models = [
-            str(item.get("id"))
-            for item in data.get("data", [])
-            if isinstance(item, dict) and item.get("id")
-        ][:30]
-        latency = int((time.time() - start) * 1000)
-        return {
-            "ok": True,
-            "latency_ms": latency,
-            "models": models,
-            "model_ok": (not models) or (model in models),
-        }
-    except urllib.error.HTTPError as exc:
-        body = exc.read()[:300].decode("utf-8", "replace")
-        if exc.code not in (404, 405):
-            raise ApiError(f"鉴权或接口异常（HTTP {exc.code}）：{body}") from exc
-    except urllib.error.URLError as exc:
-        raise ApiError(f"连接失败：{exc.reason}") from exc
-    except (TimeoutError, OSError) as exc:
-        raise ApiError(f"连接超时或被拒绝：{exc}") from exc
-
-    # 2) /models 不可用时，用一次最小 chat 请求验证
+def _probe_chat(
+    base: str, headers: dict, model: str, timeout: float = 25.0
+) -> tuple[bool, str, str | None]:
+    """用一次最小 chat 请求验证模型是否真的可用。返回 (ok, served_model, error)。"""
     payload_body = json.dumps(
         {
             "model": model,
@@ -208,15 +188,104 @@ def _test_llm(payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
-            response.read()
-        latency = int((time.time() - start) * 1000)
-        return {"ok": True, "latency_ms": latency, "models": [], "model_ok": True}
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
     except urllib.error.HTTPError as exc:
         body = exc.read()[:300].decode("utf-8", "replace")
-        raise ApiError(f"测试请求失败（HTTP {exc.code}）：{body}") from exc
+        return False, "", f"HTTP {exc.code}: {body}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ApiError(f"测试请求失败：{exc}") from exc
+        return False, "", str(exc)
+    served = ""
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+        if isinstance(data, dict):
+            served = str(data.get("model") or "")
+    except ValueError:
+        pass
+    return True, served, None
+
+
+def _test_llm(payload: dict) -> dict:
+    values = resolved_values()
+    key = str(payload.get("api_key") or values.get("api_key") or "").strip()
+    base = str(payload.get("base_url") or values.get("base_url") or "").strip().rstrip("/")
+    model = str(payload.get("model") or values.get("model") or "").strip()
+    if not key:
+        raise ApiError("API Key 为空，无法测试")
+    if not base.startswith(("http://", "https://")):
+        raise ApiError("Base URL 必须以 http:// 或 https:// 开头")
+    if not model:
+        raise ApiError("模型名称为空")
+
+    headers = {"Authorization": f"Bearer {key}"}
+    start = time.time()
+
+    # 1) 优先 /models：同时验证连通性与鉴权
+    try:
+        request = urllib.request.Request(f"{base}/models", headers=headers)
+        with urllib.request.urlopen(request, timeout=12) as response:
+            raw = response.read()
+        data = json.loads(raw.decode("utf-8", "replace"))
+        models = [
+            str(item.get("id"))
+            for item in data.get("data", [])
+            if isinstance(item, dict) and item.get("id")
+        ][:30]
+        latency = int((time.time() - start) * 1000)
+        if not models or model in models:
+            return {
+                "ok": True,
+                "latency_ms": latency,
+                "models": models,
+                "model_ok": True,
+                "served_model": model,
+                "warning": "",
+            }
+
+        # 模型不在列表里：部分服务商用别名/路由，实测一次避免误报
+        probe_ok, served, probe_error = _probe_chat(base, headers, model)
+        if probe_ok:
+            return {
+                "ok": True,
+                "latency_ms": latency,
+                "models": models,
+                "model_ok": True,
+                "served_model": served or model,
+                "warning": (
+                    f"模型 {model} 不在 /models 列表中，但实测可用"
+                    f"（服务端返回 {served or model}）"
+                ),
+            }
+        return {
+            "ok": True,
+            "latency_ms": latency,
+            "models": models,
+            "model_ok": False,
+            "served_model": "",
+            "warning": f"连接成功，但模型 {model} 实测不可用：{probe_error}",
+        }
+    except urllib.error.HTTPError as exc:
+        body = exc.read()[:300].decode("utf-8", "replace")
+        if exc.code not in (404, 405):
+            raise ApiError(f"鉴权或接口异常（HTTP {exc.code}）：{body}") from exc
+    except urllib.error.URLError as exc:
+        raise ApiError(f"连接失败：{exc.reason}") from exc
+    except (TimeoutError, OSError) as exc:
+        raise ApiError(f"连接超时或被拒绝：{exc}") from exc
+
+    # 2) /models 不可用时，用一次最小 chat 请求验证
+    probe_ok, served, probe_error = _probe_chat(base, headers, model)
+    latency = int((time.time() - start) * 1000)
+    if probe_ok:
+        return {
+            "ok": True,
+            "latency_ms": latency,
+            "models": [],
+            "model_ok": True,
+            "served_model": served or model,
+            "warning": "",
+        }
+    raise ApiError(f"测试请求失败：{probe_error}")
 
 
 def _env_checks(refresh: bool) -> dict:

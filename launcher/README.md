@@ -113,7 +113,9 @@ launcher/
 - **双击 exe 没反应**：首次启动 PyInstaller 单文件程序需要解压，约 2~4 秒；若仍无反应，查看 `data/launcher.log`。
 - **窗口没弹出来**：管理台会优先用 Edge `--app` 打开；若未安装 Edge 则退化为默认浏览器。可手动访问 `http://127.0.0.1:8765`。
 - **端口被占用**：默认从 8765 起自动顺延，也会复用已在运行的实例窗口。
-- **NapCat 一键启动**：需在「配置 → 管理台设置」填写启动命令，例如：
-  `"D:\NapCatQQ\bootmain\napcat\apimain.exe" "D:\QQ\QQ.exe" "D:\NapCatQQ\bootmain\napcat\apiloader.dll" "D:/NapCatQQ/bootmain/napcat/nativeLoader.cjs"`
+- **NapCat 一键启动**：需在「配置 → 管理台设置」填写启动命令。新版 NapCat（bootmain 启动器）通常为：
+  `"D:\NapCatQQ\bootmain\NapCatWinBootMain.exe"`
+  管理台启动前会校验命令中的可执行文件是否存在，不存在会直接报错；若使用旧版 apimain 方式，请确认路径真实存在。
+- **Bot 运行中但收不到消息**：概览页会提示「OneBot 未连接」，说明 NapCat 未启动或端口与 `AMIS_NAPCAT_WS_URL` 不一致。启动 NapCat 并确认 3001 端口监听后，bot 会在 15 秒内自动重连。
 - **API Key 测试失败**：确认 Key 未过期/未被回收、Base URL 指向 OpenAI 兼容端点；DeepSeek 可在控制台重新生成。
 - **退出后 bot 还在跑**：通过管理台「退出管理台」会先停止 bot；若直接结束进程，请手动结束 `python.exe run.py`。

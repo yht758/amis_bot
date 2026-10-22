@@ -1867,7 +1867,9 @@
       const response = await api('/api/config/test', { method: 'POST', body: body, timeout: 25000 });
       result.textContent = '';
       result.hidden = false;
-      result.className = 'test-result is-ok';
+      const warning = response.warning ? String(response.warning) : '';
+      const modelOk = response.model_ok !== false;
+      result.className = 'test-result ' + (!modelOk ? 'is-fail' : (warning ? 'is-warn' : 'is-ok'));
       const checkIcon = el('span', null, '');
       checkIcon.innerHTML = iconMarkup('check');
       checkIcon.style.display = 'inline-flex';
@@ -1879,7 +1881,14 @@
         models.forEach((model) => chips.appendChild(el('span', 'chip', model)));
         result.appendChild(chips);
       }
-      toast({ type: 'success', title: '连接测试通过', message: '延迟 ' + asInt(response.latency_ms, 0) + ' ms' });
+      if (warning) result.appendChild(el('span', 'test-warning', warning));
+      if (!modelOk) {
+        toast({ type: 'error', title: '连接成功，但模型不可用', message: warning || '请检查模型名称' });
+      } else if (warning) {
+        toast({ type: 'info', title: '连接正常（模型为别名）', message: warning });
+      } else {
+        toast({ type: 'success', title: '连接测试通过', message: '延迟 ' + asInt(response.latency_ms, 0) + ' ms' });
+      }
     } catch (error) {
       result.textContent = '';
       result.hidden = false;
@@ -1967,19 +1976,24 @@
     const sub = $('#ov-status-sub');
     const bot = app.state ? app.state.bot : null;
     const config = app.state ? app.state.config : null;
+    const onebot = app.state ? app.state.onebot : null;
+    const onebotBroken = !!(status === 'running' && onebot && onebot.reachable === false);
     let subText = '正在读取 Bot 状态…';
     if (sub) {
       if (status === 'starting') subText = '正在拉起 Bot 进程，请稍候…';
       else if (status === 'stopping') subText = '正在优雅停止 Bot 进程…';
       else if (status === 'running' && bot) {
         subText = '模型 ' + (config && config.model ? config.model : '—') + ' · PID ' + (bot.pid || '—') + ' · 自动重启' + (bot.auto_restart ? '已开启' : '已关闭');
-        if (config && config.loaded && !config.valid) subText += ' · 配置校验未通过';
+        if (onebotBroken) {
+          subText = 'OneBot 未连接（' + onebot.host + ':' + onebot.port + '）：Bot 已运行但收不到消息，请先启动 NapCat';
+        } else if (config && config.loaded && !config.valid) subText += ' · 配置校验未通过';
       } else if (status === 'error' && bot) {
         subText = '进程已退出（退出码 ' + bot.exit_code + '），请查看日志排查';
       } else if (status === 'stopped') {
         subText = '点击右侧按钮启动 Bot，或前往配置页检查 API Key';
       }
       sub.textContent = subText;
+      sub.classList.toggle('is-warn', onebotBroken);
     }
 
     const running = !!(bot && bot.running);
