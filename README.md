@@ -4,6 +4,15 @@
 
 默认对接 OpenAI 兼容的 Chat Completions API（默认 `deepseek-chat`，配置 `AMIS_API_KEY` 后即可使用），也可切换为任意兼容端点。
 
+> **当前版本 2.0.0** · 新增图形化管理台与 NapCat 自动更新 · [更新日志](CHANGELOG.md) · [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md)
+
+## 2.0 更新内容
+
+- **本地图形化管理台（BotManager.exe）**：一键启停 Bot、可视化配置（含 API Key 连通性测试）、实时日志、环境自检、NapCat 一键启动与自动更新。
+- **部署体验升级**：适配新版 NapCat（`napiLoader.bat` / `napimain.exe`）启动方式；管理台内置 NapCat 更新（下载、SHA256 校验、备份、保留配置、支持镜像）。
+- **聊天核心**：Summary Buffer 摘要压缩、SSE 流式接收、按标点分片 + 1~2 秒拟人节奏、配置分层校验、22 个离线测试。
+- **开源友好**：密钥与账号全部脱离代码、管理台只监听本机、完整 `.env.example` 与文档。
+
 ## 核心特性
 
 - **多用户上下文隔离**：按用户维度维护独立对话历史，多账号同时聊天互不串台；同一用户同一时刻只处理一条消息，处理中到达的新消息会被忽略，避免重复回复与上下文串扰。
@@ -26,6 +35,9 @@
 ├── .env.example
 ├── .gitignore
 ├── README.md
+├── CHANGELOG.md                # 版本更新日志
+├── CONTRIBUTING.md              # 贡献指南
+├── SECURITY.md                  # 安全策略
 ├── LICENSE
 ├── scripts/                    # Windows 可选启动脚本
 │   ├── start.bat
@@ -65,6 +77,8 @@
 运行期生成的数据与日志分别写入 `data/`、`logs/`，二者已在 `.gitignore` 中忽略。
 
 ## 快速开始
+
+> 想少折腾？直接使用图形化管理台：构建一次 `BotManager.exe` 后双击即可，见下方「图形化管理台」。
 
 需要 Python 3.10+；以下以 Windows PowerShell 为例，其他 shell 替换为等价命令即可：
 
@@ -178,12 +192,24 @@ python launcher\launcher.py
 
 核心与平台解耦，OneBot 适配器只是把私聊消息转成 `MessageTransport` 调用，可按需替换。
 
-1. 单独安装并登录 NapCat（不属于本仓库依赖），开启 OneBot v11 正向 WebSocket，默认端口 `3001`；若改端口，同步修改 `AMIS_NAPCAT_WS_URL`。`scripts/start-with-napcat.bat` 内置检测 3001 端口，改动端口时请同步修改脚本或直接运行 `python run.py`。
-2. 启动桥接器：`python run.py`，或使用 `scripts/start.bat`。
-3. 私聊机器人即可对话；当前适配器只处理私聊，`AMIS_RESPOND_TO_GROUPS` 为后续群聊支持预留。
-4. 首次部署建议至少配置一个 `AMIS_ADMIN_USERS`，否则管理指令无人可用；需要限制范围时再填写 `AMIS_ALLOWED_USERS`。
-5. 连接断开后适配器会自动重连，无需手动重启。
-6. 接入其他平台时，实现 `ports.MessageTransport` 协议并参考 `adapters/onebot/` 的事件循环即可复用全部核心逻辑。
+### 1. 准备 NapCat 与 QQ
+
+- NapCat 需要与 QQ 版本匹配。QQ 升级后 NapCat 可能失效（典型表现：QQ 弹「文件已损坏」或 3001 端口不监听），此时更新 NapCat 框架即可。
+- 从 [NapCatQQ Releases](https://github.com/NapNeko/NapCatQQ/releases) 下载与当前 QQ 匹配的版本；推荐 Shell 版或官方安装器。
+- 本项目管理台内置「NapCat 自动更新」：环境页可检查最新版并一键更新（自动下载、SHA256 校验、备份旧框架与 config、保留配置）。
+
+### 2. 启动 NapCat
+
+- 新版 Framework 版 NapCat 使用 `napiLoader.bat`（内部调用 `napimain.exe`）启动；管理台「配置 → 管理台设置」可配置启动命令，并在概览页一键启动。
+- 在弹出的 QQ 登录窗口登录**机器人账号**。机器人的 QQ 窗口可以最小化，但**不要关闭**——关闭会导致 NapCat 断开、bot 收不到消息。
+- 确认 OneBot v11 正向 WebSocket 监听 `127.0.0.1:3001`（NapCat 的 `onebot11_<QQ>.json` 中配置）。若改端口，同步修改 `AMIS_NAPCAT_WS_URL`。
+
+### 3. 启动 Bridge
+
+- `python run.py`，或在管理台点「启动 Bot」。
+- 连接断开后适配器会自动重连（最长 15 秒内），无需手动重启。
+- 首次部署建议至少配置一个 `AMIS_ADMIN_USERS`，否则管理指令无人可用；需要限制范围时再填写 `AMIS_ALLOWED_USERS`。
+- 接入其他平台时，实现 `ports.MessageTransport` 协议并参考 `adapters/onebot/` 的事件循环即可复用全部核心逻辑。
 
 ## 已知限制与 Roadmap
 
@@ -194,13 +220,20 @@ python launcher\launcher.py
 | 配置校验 | 分层加载、启动时校验、`--check-config` 只校验并报告字段级问题后退出 | 更完整的字段级取值范围提示；启动前完整自检；交互式配置 |
 | 平台适配 | 官方 OneBot 适配器、自动重连、黑白名单过滤 | 更多平台适配器与协议测试；多实例 / 多账号运行 |
 | 会话持久化 | 对话上下文与摘要保存在进程内存，重启后清空；用户互动状态落盘 `data/` | 会话持久化与加密存储；重启后继续历史对话 |
-| 可观测性 | 文本日志（`status` / `questions` / `answers`）与 `/log` 查看 | 结构化日志、运行指标与告警；可视化管理面板 |
+| 可观测性 | 文本日志（`status` / `questions` / `answers`）与 `/log` 查看；管理台实时日志与环境自检 | 结构化日志、运行指标与告警；日志持久化 |
+| 管理台 | 一键启停、可视化配置、实时日志、环境自检、NapCat 自动更新、单文件 exe | 托盘图标与开机自启；多实例管理；远程访问鉴权 |
 
 ## 免责声明
 
 - 本项目为非官方同人作品，与《鸣潮》及其权利方无关，不代表其立场，也不包含官方素材。
 - 默认人设 `aemeath.py` 仅作为拟真 IM 约束的示例，可通过 `AMIS_PERSONA` 替换为自定义人设；请自行确认角色内容的使用边界。
 - 仅供学习与技术交流，不得用于骚扰、诈骗、刷屏或其他违法违规用途；使用者须遵守所在平台的服务条款与当地法律法规，因使用本项目产生的后果由使用者自行承担。
+
+## 贡献与安全
+
+- 贡献方式、代码约定与 PR 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)；
+- 漏洞报告与密钥泄露处理见 [SECURITY.md](SECURITY.md)；
+- 版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 

@@ -6,7 +6,7 @@
   'use strict';
 
   /* ---------------- 常量与工具 ---------------- */
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '2.0.0';
   const MAX_LOG_ROWS = 2000;
   const POLL_MS = 2000;
   const RECONNECT_MS = 6000;

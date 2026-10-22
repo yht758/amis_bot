@@ -31,7 +31,7 @@ SECRET_PATH = ROOT / "config.secret.json"
 SETTINGS_PATH = ROOT / "data" / "launcher_settings.json"
 
 APP_NAME = "im-bridge-manager"
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 
 DEFAULTS: dict[str, Any] = {
     "base_url": "https://api.deepseek.com/v1",
