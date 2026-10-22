@@ -79,3 +79,93 @@ LangChain `ConversationSummaryBufferMemory`；MemGPT 的分层记忆思路；Ope
 
 ## 参考
 `pydantic-settings`；`python-dotenv`；The Twelve-Factor App 的 Config 原则。
+
+---
+
+## 4. [Feature] 主动会话：让 Bot 在合适时机主动发起聊天
+
+## 背景 / 动机
+
+目前 Bot 只在收到消息后被动回复。真实 IM 聊天里，关系亲近的人会偶尔主动发起话题（问候、续上上次没聊完的事、很久没联系时打个招呼）。主动会话是「拟真聊天」从"响应式"走向"有存在感"的关键一步。
+
+## 现状与痛点
+
+- `src/im_bridge/core/engine.py` 只处理入站消息，没有定时/触发式主动发送能力。
+- `src/im_bridge/core/state.py` 已有 `last_interact_ts`、`consecutive_days`、`total_messages` 等状态，但仅用于统计，尚未用于主动触达。
+- `src/im_bridge/core/context.py` 的摘要与最近消息可作为主动消息的上下文，但引擎没有对外暴露"读取某用户上下文"的接口。
+- 目前没有频率上限、静默时段、退订机制，直接加主动发送容易变成骚扰。
+
+## 期望行为 / 验收标准
+
+- [ ] 新增 `AMIS_PROACTIVE_ENABLED`（默认 `false`）；开启后 Bot 能在合适时机主动发一条短消息。
+- [ ] 触发条件可配置：距上次互动超过 N 小时、连续互动天数里程碑、每人每日最多 M 条、静默时段（如 23:00–08:00 不发送）。
+- [ ] 主动消息沿用拟真约束（短句、按标点分片、1~2 秒间隔），并写入该用户上下文，后续对话自然衔接。
+- [ ] 用户回复后进入正常对话；用户 `/reset` 或显式关闭后不再主动触达。
+- [ ] 发送失败或 LLM 失败时自动跳过，不重试轰炸。
+- [ ] 管理台可查看/开关主动会话配置（复用 `/api/config` 字段与配置页）。
+
+## 实现建议 / 任务拆解
+
+1. 新增 `src/im_bridge/core/proactive.py`：一个 asyncio 后台调度器（`start()/stop()`），按固定间隔扫描 `StateManager` 中的用户并判断触发条件；
+2. 从 `ContextManager` 取摘要 + 最近消息，用专用 system prompt 让 LLM 生成"主动开场白"（限 30 字内），复用 `ChunkStreamer` 发送；
+3. 新增配置项：`AMIS_PROACTIVE_ENABLED`、`AMIS_PROACTIVE_IDLE_HOURS`、`AMIS_PROACTIVE_MAX_PER_DAY`、`AMIS_PROACTIVE_QUIET_HOURS`；
+4. 调度器在 `app.py` 停止流程中优雅关闭；单用户加冷却时间，避免连续触达；
+5. 增加单元测试（假时钟 + FakeTransport）覆盖阈值、静默时段、每日上限。
+
+方案取舍：① 固定间隔轮询（简单、可控）vs ② 事件 + 定时器（更精确但状态复杂）——推荐 ①，且默认关闭，稳定后再考虑开启。
+
+## 影响范围 / 风险
+
+- 主动消息可能打扰用户，必须默认关闭、有频率与静默限制，并提供关闭方式；
+- 需要额外 LLM 调用（token 成本），通过频率上限控制；
+- 与 `/stop`、`/reset`、黑白名单的交互需明确；
+- 群聊场景暂不支持，仅私聊。
+
+## 参考
+
+OneBot v11 `send_private_msg`；拟人聊天产品（如 Replika）的主动消息策略。
+
+---
+
+## 5. [Feature] 语音消息支持：语音输入转写与语音回复
+
+## 背景 / 动机
+
+目前 Bot 只处理纯文本私聊（`raw_message`）。QQ 用户高频使用语音消息，Bot 若把 `[CQ:record,...]` 当普通文本喂给 LLM，会得到无意义回复；如果支持「语音转文字 + 可选语音回复」，拟真度会明显提升。
+
+## 现状与痛点
+
+- `src/im_bridge/adapters/onebot/app.py` 直接把 `raw_message` 传给 `ChatEngine.handle_message`，未解析消息段 / CQ 码。
+- `AMIS_RESPOND_TO_GROUPS` 仅预留；语音、图片、表情等富媒体均未处理。
+- 语音文件需要 NapCat 提供下载（`get_record` / `get_file`），当前适配器没有封装。
+- 回复语音需要 TTS 与 `record` 消息段，涉及音频格式（silk/amr/mp3）与平台兼容性。
+
+## 期望行为 / 验收标准
+
+- [ ] 收到语音消息时，自动下载并转写为文字后进入正常对话（`AMIS_VOICE_INPUT_ENABLED`，默认 `false`）。
+- [ ] 配置 `AMIS_VOICE_REPLY_ENABLED` 后，文本回复可同步合成语音发送（与文字二选一或附带发送）。
+- [ ] 转写失败或 TTS 失败时自动回退文字，不中断会话。
+- [ ] 语音消息大小/时长有上限，避免下载过大文件。
+- [ ] 语音内容参与上下文摘要与 `/reset`，与文字行为一致。
+- [ ] 配置校验能提示缺失的 ASR/TTS 端点（`--check-config`）。
+
+## 实现建议 / 任务拆解
+
+1. `adapters/onebot/` 增加消息段解析：把 `message` 数组或 CQ 码解析为 `text` / `record(file,url)` / `image`，仅对 record 做语音处理；
+2. 调用 OneBot `get_record` 获取语音文件 URL，下载到 `data/voice/`（已 gitignore），再调用 ASR 接口转写；
+3. `core/` 增加 `VoiceTranscriber` / `SpeechSynthesizer` 端口（默认不启用），实现可插拔 provider（如 OpenAI Whisper 兼容接口、Azure/本地 TTS）；
+4. `engine.py` 回复阶段按配置生成语音：TTS 输出音频 → 编码为 OneBot `record` 段 → `send_private_msg`；
+5. 失败回退文字；增加单测（mock ASR/TTS）。
+
+方案取舍：① 先做「语音转文字」（成本低、风险小）；② 再做「文字转语音回复」（需要音频编码与平台兼容）；③ 全双工实时语音（暂不做）。推荐先 ① 后 ②。
+
+## 影响范围 / 风险
+
+- 需要外部 ASR/TTS 服务（网络、费用、隐私），默认关闭；
+- 语音文件涉及隐私，需本地临时存储并定期清理；
+- QQ 语音格式（silk/amr）与 OneBot 版本兼容性需实测；
+- NapCat 需允许获取语音文件。
+
+## 参考
+
+OneBot v11 消息段与 `get_record`；OpenAI Whisper API；QQ 语音 silk 格式。
