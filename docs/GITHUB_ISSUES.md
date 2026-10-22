@@ -61,7 +61,7 @@ LangChain `ConversationSummaryBufferMemory`；MemGPT 的分层记忆思路；Ope
 新用户第一步是复制 `.env.example` 为 `.env`。配置缺失或格式错误时往往到真正请求才失败，报错来自底层 HTTP/WS 库，难以定位字段。字段级校验与修复提示能显著降低上手成本。
 
 ## 现状与痛点
-`src/im_bridge/config.py` 已按「环境变量 > `.env` > `config.secret.json` > `config.json`」加载，`Config.validate()` 会聚合校验必填 API Key、URL 协议、数值范围、分片延迟交叉约束等并一次列出全部问题；`python run.py --check-config` 可提前检查，示例在 `.env.example`。不足：报错不打印当前值（或脱敏值）与合法区间；URL 未校验是否误带 `/chat/completions`；`AMIS_MAX_HISTORY` 与摘要阈值的关系未做交叉校验；布尔值接受口径需与 `.env.example` 注释统一；`.env.example` 键名易漂移且无一致性测试；启动摘要之外的日志/报错缺少密钥脱敏。
+`src/im_bridge/config.py` 已按「环境变量 > `.env` > `config.secret.json` > `config.json`」加载，`Config.validate()` 会聚合校验必填 API Key、URL 协议、数值范围、分片延迟与摘要阈值等交叉约束，并一次列出全部问题；`python run.py --check-config` 可提前检查，示例在 `.env.example`。不足：错误信息缺少统一格式（字段名、来源、当前值或合法区间、修复建议四要素未全部覆盖）；URL 未校验是否误带 `/chat/completions`；布尔值接受口径需与 `.env.example` 注释完全统一（如 `on/off`）；`.env.example` 键名易漂移且无一致性测试；启动摘要之外的日志/报错缺少密钥脱敏。
 
 ## 期望行为 / 验收标准
 - [ ] 缺 `AMIS_API_KEY` 时启动立即失败，输出字段名、来源与修复示例。
