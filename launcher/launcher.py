@@ -115,10 +115,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"已打开：{url}")
         return 0
 
-    # 单实例：已有实例则直接打开窗口
+    # 单实例：已有实例则直接打开窗口（--no-browser 时不打开，保持无头语义）
     existing = find_existing_port()
     if existing is not None:
         url = f"http://127.0.0.1:{existing}/"
+        if args.no_browser:
+            print(f"管理台已在运行：{url}")
+            return 0
         env_check.open_app_window(url)
         print(f"管理台已在运行，已打开：{url}")
         return 0
