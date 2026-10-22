@@ -35,6 +35,14 @@ release/
 *.zip
 *.exe
 
+# ---- 管理台构建与调试产物（可复现构建，不入库） ----
+.build/
+dist/
+build_manager/
+*.spec
+launcher/.screenshots/
+launcher/web/.preview/
+
 # ---- 本地说明文档（含个人信息，不提交） ----
 docs/*.docx
 docs/*.pdf

@@ -31,6 +31,11 @@
 │   ├── start.bat
 │   ├── start-with-napcat.bat
 │   └── monitor.bat
+├── launcher/                   # 本地图形化管理台（可选）
+│   ├── launcher.py             # 启动入口（python launcher\launcher.py）
+│   ├── web/                    # 原生 HTML/CSS/JS 管理界面
+│   ├── build_exe.py            # 构建 BotManager.exe
+│   └── README.md               # 管理台使用/构建说明
 ├── docs/
 │   └── GITHUB_ISSUES.md        # 待实现特性的 Issue 草稿
 ├── tests/
@@ -87,6 +92,38 @@ AMIS_MODEL=deepseek-chat
 密钥也可以放在 `config.secret.json` 中，或直接通过环境变量注入；`config.json`、`config.secret.json`、`.env` 都不应提交到版本库。
 
 Windows 用户也可以直接使用 `scripts/` 下的脚本：`start.bat` 启动桥接器，`start-with-napcat.bat` 先等待 NapCat 的 OneBot WebSocket 端口就绪再启动，`monitor.bat` 用于查看运行状态与日志（脚本行为以文件内容为准）。脚本仅是对上述命令的封装，可按自己的环境修改。如果本机已有仓库内的便携版 Python 运行时，直接用 `scripts\start.bat` 调用 `python\python.exe` 运行即可，无需先创建虚拟环境。
+
+## 图形化管理台（可选）
+
+不想手改 `.env` 或敲命令行？仓库附带本地管理台 **BotManager**：一键启动/停止/重启 bot、可视化配置、实时日志、环境自检，界面支持深/浅主题与动态效果。
+
+启动方式（二选一）：
+
+```powershell
+# 1) 单文件 exe（推荐）：先构建一次，之后双击即可
+python launcher\build_exe.py      # 生成项目根目录下的 BotManager.exe
+
+# 2) 直接从源码启动
+python launcher\launcher.py
+```
+
+管理台默认监听 `http://127.0.0.1:8765`，会用 Edge 应用窗口打开（未安装 Edge 时回退默认浏览器）。
+
+- **一键启停**：启动 / 停止 / 重启 bot，显示 PID、运行时长；可选自动重启。
+- **配置管理**：API Key（密码框 + 一键测试连通性）、模型、Bot QQ、管理员/白名单、上下文与摘要参数、流式/分片开关与延迟、人设。
+- **实时日志**：SSE 推送、级别筛选、搜索、下载。
+- **环境自检**：Python 运行时 / 依赖 / 配置 / OneBot 端口 / NapCat / Edge 逐项检测并给出修复建议。
+- **数据安全**：只监听 `127.0.0.1`；API Key 只写 `.env`；不上传任何数据。
+
+界面预览（均为 `?demo=1` 演示模式，数据是模拟值）：
+
+| 概览 | 配置 |
+| --- | --- |
+| ![管理台概览](docs/screenshots/overview.png) | ![配置页](docs/screenshots/settings.png) |
+| **实时日志** | **环境自检** |
+| ![日志页](docs/screenshots/logs.png) | ![环境自检](docs/screenshots/env.png) |
+
+详细说明见 [launcher/README.md](launcher/README.md)。
 
 ## 配置项
 
