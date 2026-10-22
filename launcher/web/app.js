@@ -456,6 +456,25 @@
     }
     if (cleanPath === '/api/napcat/stop') return { ok: true };
     if (cleanPath === '/api/napcat/status') return { ok: true, running: false };
+    if (cleanPath === '/api/napcat/update/status') {
+      return {
+        ok: true,
+        state: {
+          running: false, stage: 'idle', message: '', downloaded: 0, total: 0,
+          percent: 0, error: '', result: null
+        },
+        check: {
+          ok: true,
+          local: { installed: true, tag: 'v4.18.41', mtime: nowSec() - 86400, path: 'D:\\NapCatQQ\\bootmain\\napcat' },
+          latest_tag: 'v4.18.41',
+          update_available: false,
+          asset: { name: 'NapCat.Framework.zip', size: 36738019, digest: 'sha256:demo', url: '' },
+          error: ''
+        },
+        mirror: ''
+      };
+    }
+    if (cleanPath === '/api/napcat/update') return { ok: true, started: true };
     if (cleanPath === '/api/shutdown') return { ok: true };
     throw new Error('演示模式未覆盖该接口：' + cleanPath);
   }
@@ -2630,6 +2649,7 @@
   }
 
   function renderEnv() {
+    loadNapcatUpdate();
     const grid = $('#env-grid');
     if (!grid) return;
     const checks = Array.isArray(app.env) ? app.env : [];
@@ -2736,6 +2756,173 @@
   function initEnv() {
     const refresh = $('#btn-env-refresh');
     if (refresh) refresh.addEventListener('click', () => loadEnv(true));
+    const checkBtn = $('#btn-napcat-check');
+    if (checkBtn) {
+      checkBtn.addEventListener('click', () => {
+        app.napcatUpdate = null;
+        loadNapcatUpdate(true);
+      });
+    }
+    const updateBtn = $('#btn-napcat-update');
+    if (updateBtn) updateBtn.addEventListener('click', startNapcatUpdate);
+  }
+
+  /* ---------------- NapCat 更新 ---------------- */
+  async function loadNapcatUpdate(force) {
+    if (app.napcatUpdateLoading) return;
+    if (app.napcatUpdate && !force) {
+      renderNapcatUpdate();
+      return;
+    }
+    app.napcatUpdateLoading = true;
+    try {
+      const response = await api('/api/napcat/update/status' + (force ? '?refresh=1' : ''), { timeout: 25000 });
+      app.napcatUpdate = response;
+      renderNapcatUpdate();
+      if (response.state && response.state.running) scheduleNapcatPoll();
+    } catch (error) {
+      const chip = $('#napcat-update-chip');
+      if (chip) {
+        chip.textContent = '检查失败';
+        chip.dataset.tone = 'danger';
+      }
+    } finally {
+      app.napcatUpdateLoading = false;
+    }
+  }
+
+  function scheduleNapcatPoll() {
+    clearTimeout(app.napcatUpdateTimer);
+    app.napcatUpdateTimer = setTimeout(async () => {
+      try {
+        const response = await api('/api/napcat/update/status', { timeout: 15000 });
+        app.napcatUpdate = response;
+        renderNapcatUpdate();
+        if (response.state && response.state.running) scheduleNapcatPoll();
+      } catch (error) {
+        /* 连接异常时停止轮询 */
+      }
+    }, 1200);
+  }
+
+  function napcatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value >= 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MB';
+    if (value >= 1024) return (value / 1024).toFixed(0) + ' KB';
+    return value + ' B';
+  }
+
+  function napcatLocalText(local) {
+    if (!local || !local.installed) return '未检测到框架';
+    if (local.tag) return local.tag;
+    if (local.mtime) {
+      try {
+        return '已安装 · ' + new Date(local.mtime * 1000).toLocaleDateString('zh-CN');
+      } catch (error) { /* ignore */ }
+    }
+    return '已安装（版本未知）';
+  }
+
+  function renderNapcatUpdate() {
+    const data = app.napcatUpdate;
+    if (!data) return;
+    const check = data.check || {};
+    const state = data.state || {};
+    const chip = $('#napcat-update-chip');
+    const localNode = $('#napcat-local');
+    const latestNode = $('#napcat-latest');
+    const mirrorNode = $('#napcat-mirror');
+    const checkBtn = $('#btn-napcat-check');
+    const updateBtn = $('#btn-napcat-update');
+    const progress = $('#napcat-progress');
+    const fill = $('#napcat-progress-fill');
+    const progressText = $('#napcat-progress-text');
+    const messageNode = $('#napcat-update-msg');
+
+    if (localNode) localNode.textContent = napcatLocalText(check.local);
+    if (latestNode) latestNode.textContent = check.latest_tag || (check.error ? '获取失败' : '—');
+    if (mirrorNode && document.activeElement !== mirrorNode) mirrorNode.value = data.mirror || '';
+
+    if (chip) {
+      let tone = 'neutral';
+      let text = '检查中…';
+      if (state.running) {
+        tone = 'warn';
+        text = '更新中';
+      } else if (state.stage === 'done') {
+        tone = 'ok';
+        text = '已更新';
+      } else if (state.stage === 'error') {
+        tone = 'danger';
+        text = '更新失败';
+      } else if (check.error) {
+        tone = 'danger';
+        text = '检查失败';
+      } else if (check.update_available) {
+        tone = 'warn';
+        text = '有新版本';
+      } else if (check.latest_tag) {
+        tone = 'ok';
+        text = '已是最新';
+      }
+      chip.textContent = text;
+      chip.dataset.tone = tone;
+    }
+
+    const busy = !!state.running;
+    if (checkBtn) {
+      checkBtn.disabled = busy;
+      checkBtn.classList.toggle('is-loading', busy);
+    }
+    if (updateBtn) updateBtn.disabled = busy || !check.update_available;
+
+    if (progress && fill && progressText) {
+      const visible = busy || state.stage === 'done' || state.stage === 'error';
+      progress.hidden = !visible;
+      const percent = busy
+        ? Math.max(0, Math.min(100, Number(state.percent) || 0))
+        : (state.stage === 'done' ? 100 : 0);
+      fill.style.width = percent + '%';
+      if (busy) {
+        const size = state.total
+          ? '（' + napcatBytes(state.downloaded) + ' / ' + napcatBytes(state.total) + '，' + percent + '%）'
+          : '';
+        progressText.textContent = (state.message || '更新中…') + size;
+      } else {
+        progressText.textContent = state.message || '';
+      }
+    }
+
+    if (messageNode) {
+      if (state.error) {
+        messageNode.hidden = false;
+        messageNode.textContent = '失败：' + state.error;
+      } else if (state.stage === 'done') {
+        const backup = state.result && state.result.backup ? '，旧框架已备份到 ' + state.result.backup : '';
+        messageNode.hidden = false;
+        messageNode.textContent = '更新完成' + backup + '。请从管理台重新启动 NapCat。';
+      } else {
+        messageNode.hidden = true;
+        messageNode.textContent = '';
+      }
+    }
+  }
+
+  async function startNapcatUpdate() {
+    const button = $('#btn-napcat-update');
+    if (!button || button.disabled) return;
+    const mirror = $('#napcat-mirror') ? $('#napcat-mirror').value.trim() : '';
+    button.disabled = true;
+    try {
+      await api('/api/napcat/update', { method: 'POST', body: { mirror: mirror }, timeout: 20000 });
+      toast({ type: 'info', title: '开始更新 NapCat', message: '下载与安装可能需要几分钟，请勿关闭管理台。' });
+      app.napcatUpdate = null;
+      await loadNapcatUpdate(true);
+      scheduleNapcatPoll();
+    } catch (error) {
+      toastError(error, '更新启动失败');
+      renderNapcatUpdate();
+    }
   }
 
   /* ---------------- 关于 ---------------- */

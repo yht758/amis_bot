@@ -467,6 +467,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "auto_open": True,
     "port": 8765,
     "theme": "dark",
+    "napcat_update_mirror": "",
 }
 
 

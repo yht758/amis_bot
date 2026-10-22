@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import env_check
+import napcat_update
 from bot_manager import bot_manager
 from config_store import (
     APP_NAME,
@@ -420,6 +421,10 @@ class ManagerHandler(BaseHTTPRequestHandler):
         if path == "/api/napcat/status":
             self._send_json({"ok": True, "running": env_check._napcat_process is not None})
             return
+        if path == "/api/napcat/update/status":
+            refresh = query.get("refresh", ["0"])[0] in ("1", "true", "yes")
+            self._send_json(napcat_update.get_status(refresh=refresh))
+            return
 
         # 静态资源
         self._serve_static(path)
@@ -492,7 +497,7 @@ class ManagerHandler(BaseHTTPRequestHandler):
             settings = load_settings()
             if "auto_restart" in payload:
                 bot_manager.set_auto_restart(bool(payload["auto_restart"]))
-            for key in ("napcat_command", "auto_open", "theme", "port"):
+            for key in ("napcat_command", "auto_open", "theme", "port", "napcat_update_mirror"):
                 if key in payload:
                     settings[key] = payload[key]
             save_settings(settings)
@@ -506,6 +511,16 @@ class ManagerHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/napcat/stop":
             self._send_json({"ok": True, **env_check.stop_napcat()})
+            return
+        if path == "/api/napcat/update":
+            mirror = payload.get("mirror")
+            result = napcat_update.start_update(mirror if mirror is not None else None)
+            if not result.get("ok"):
+                raise ApiError(result.get("error") or "更新启动失败")
+            self._send_json(result)
+            return
+        if path == "/api/napcat/update/cancel":
+            self._send_json(napcat_update.cancel_update())
             return
         if path == "/api/shutdown":
             stopped = bot_manager.stop()["stopped"]

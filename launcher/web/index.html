@@ -702,6 +702,41 @@
         </div>
 
         <div class="env-grid stagger" id="env-grid"></div>
+
+        <div class="card napcat-update" data-glow id="napcat-update">
+          <div class="card-head">
+            <span class="card-icon tone-cyan"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg></span>
+            <div class="card-head-text">
+              <h2>NapCat 更新</h2>
+              <p>自动下载、校验并安装最新 NapCat 框架；更新前自动备份旧框架和 config。</p>
+            </div>
+            <span class="chip" id="napcat-update-chip" data-tone="neutral">检查中…</span>
+          </div>
+          <div class="napcat-update-meta">
+            <div><span class="eyebrow">本地框架</span><strong id="napcat-local">—</strong></div>
+            <div><span class="eyebrow">最新版本</span><strong id="napcat-latest">—</strong></div>
+            <label class="napcat-mirror-field"><span class="eyebrow">下载镜像（可选）</span>
+              <input id="napcat-mirror" type="text" placeholder="如 https://ghproxy.net/（留空用 GitHub 官方）" autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
+          <div class="napcat-update-progress" id="napcat-progress" hidden>
+            <div class="napcat-progress-track"><span class="napcat-progress-fill" id="napcat-progress-fill"></span></div>
+            <span class="napcat-progress-text" id="napcat-progress-text">准备中…</span>
+          </div>
+          <div class="napcat-update-actions">
+            <button class="btn btn-secondary" id="btn-napcat-check" type="button">
+              <span class="btn-spinner" aria-hidden="true"></span>
+              <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg><span>检查更新</span>
+            </button>
+            <button class="btn btn-primary" id="btn-napcat-update" type="button">
+              <span class="btn-spinner" aria-hidden="true"></span>
+              <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>一键更新</span>
+            </button>
+            <span class="napcat-update-hint">更新前请先退出 QQ / NapCat；完成后从管理台重新启动 NapCat。</span>
+          </div>
+          <div class="napcat-update-error" id="napcat-update-msg" hidden></div>
+        </div>
+
         <div class="env-loading" id="env-loading" hidden>
           <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
         </div>
