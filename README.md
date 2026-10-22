@@ -37,7 +37,8 @@
 │   ├── build_exe.py            # 构建 BotManager.exe
 │   └── README.md               # 管理台使用/构建说明
 ├── docs/
-│   └── GITHUB_ISSUES.md        # 待实现特性的 Issue 草稿
+│   ├── GITHUB_ISSUES.md        # 待实现特性的 Issue 草稿
+│   └── screenshots/            # 管理台界面截图（演示模式）
 ├── tests/
 │   └── test_core.py            # 核心层离线测试
 └── src/im_bridge/

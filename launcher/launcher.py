@@ -42,7 +42,12 @@ def _log_file(message: str) -> None:
 
 
 def _probe(port: int, timeout: float = 0.5) -> bool:
-    """探测指定端口是否是本管理台（先做快速 TCP 探测，避免慢超时）。"""
+    """探测指定端口是否是本管理台（先做快速 TCP 探测，避免慢超时）。
+
+    本机回环探测必须直连：显式使用空 ProxyHandler 的 opener，避免
+    HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 等环境变量把 127.0.0.1 的请求
+    转发给代理，导致已运行实例探测失败而重复启动第二个实例。
+    """
     import socket
     import urllib.request
 
@@ -51,8 +56,9 @@ def _probe(port: int, timeout: float = 0.5) -> bool:
             pass
     except OSError:
         return False
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=timeout) as response:
+        with opener.open(f"http://127.0.0.1:{port}/api/ping", timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
         return data.get("app") == APP_NAME
     except Exception:  # noqa: BLE001

@@ -87,6 +87,8 @@ launcher/
 └── web/               # 前端（index.html / styles.css / app.js）
 ```
 
+界面截图（演示模式）位于仓库根目录 `docs/screenshots/`。
+
 ## API 概览
 
 | 方法 | 路径 | 说明 |
