@@ -31,7 +31,7 @@ SECRET_PATH = ROOT / "config.secret.json"
 SETTINGS_PATH = ROOT / "data" / "launcher_settings.json"
 
 APP_NAME = "im-bridge-manager"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 DEFAULTS: dict[str, Any] = {
     "base_url": "https://api.deepseek.com/v1",
@@ -462,6 +462,7 @@ def save_config(payload: dict[str, Any], current_values: dict[str, Any] | None =
 # 管理台自身设置
 # --------------------------------------------------------------------------
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "mode": "local",
     "napcat_command": "",
     "auto_restart": False,
     "auto_open": True,

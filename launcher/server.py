@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import socket
 import sys
@@ -18,7 +19,6 @@ from urllib.parse import parse_qs, urlparse
 
 import env_check
 import napcat_update
-from bot_manager import bot_manager
 from config_store import (
     APP_NAME,
     APP_VERSION,
@@ -33,6 +33,76 @@ from config_store import (
     save_settings,
     validate_values,
 )
+
+# ---------------- 运行模式 ----------------
+# local  : 管理本机 python run.py 子进程（Windows 桌面默认）
+# remote : 通过 ssh.exe 管理云服务器上的 systemd 服务 im-bridge（本机管理台连服务器）
+# server : 管理台自身就跑在服务器上，直接用 systemctl / journalctl / docker 管理
+def _detect_mode() -> str:
+    raw = str(os.environ.get("IM_BRIDGE_MANAGER_MODE") or load_settings().get("mode") or "local").lower()
+    return raw if raw in ("local", "remote", "server") else "local"
+
+
+MODE = _detect_mode()
+REMOTE_MODE = MODE == "remote"
+SERVER_MODE = MODE == "server"
+remote_mod = None
+service_mod = None
+
+if REMOTE_MODE:
+    import remote as remote_mod
+    from remote import RemoteBotManager
+
+    bot_manager = RemoteBotManager()
+    try:
+        # 把 config_store 的读写路径切到远程缓存，并拉一次服务器配置
+        remote_mod.activate_config_cache()
+    except Exception as exc:  # 拉取失败不应阻塞管理台启动
+        print(f"[warn] 远程配置拉取失败：{exc}")
+elif SERVER_MODE:
+    import service_manager as service_mod
+
+    bot_manager = service_mod.SystemdBotManager()
+else:
+    from bot_manager import bot_manager
+
+
+# ---------------- 访问口令（服务器模式） ----------------
+# 管理台暴露在公网时必须带口令：首次访问 /?token=xxx 种下 Cookie，之后免输。
+AUTH_TOKEN = (os.environ.get("IM_BRIDGE_MANAGER_TOKEN") or "").strip()
+COOKIE_NAME = "im_bridge_mgr"
+AUTH_FILE = ROOT / "data" / "manager_token.txt"
+PUBLIC_PATHS = {"/api/ping"}
+
+
+def _load_or_create_token() -> str:
+    if AUTH_TOKEN:
+        return AUTH_TOKEN
+    try:
+        if AUTH_FILE.is_file():
+            token = AUTH_FILE.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    except OSError:
+        pass
+    import secrets
+
+    token = secrets.token_urlsafe(18)
+    try:
+        AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        AUTH_FILE.write_text(token + "\n", encoding="utf-8")
+        try:
+            AUTH_FILE.chmod(0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+    return token
+
+
+if SERVER_MODE:
+    AUTH_TOKEN = _load_or_create_token()
+    print(f"[auth] 管理台访问口令：{AUTH_TOKEN}")
 
 
 def get_web_dir() -> Path:
@@ -106,6 +176,8 @@ def _invalidate_config_cache() -> None:
 # ---------------- 业务处理 ----------------
 def _onebot_status() -> dict:
     """探测 OneBot WebSocket 端口是否可达（bot 只有连上它才能收到消息）。"""
+    if REMOTE_MODE:
+        return remote_mod.onebot_status()
     values = resolved_values()
     url = str(values.get("napcat_ws_url") or "ws://127.0.0.1:3001")
     try:
@@ -122,14 +194,27 @@ def _onebot_status() -> dict:
 
 
 def _state() -> dict:
+    if REMOTE_MODE:
+        target = remote_mod.read_deploy_env()["host"]
+    elif SERVER_MODE:
+        target = f"systemd://{socket.gethostname()}"
+    else:
+        target = "127.0.0.1"
     return {
         "ok": True,
         "version": APP_VERSION,
+        "mode": MODE,
+        "target": target,
+        "hostname": socket.gethostname(),
         "bot": bot_manager.status(),
         "onebot": _onebot_status(),
-        "server": {"host": "127.0.0.1", "port": _state_port[0]},
+        "server": {"host": LISTEN_HOST, "port": _state_port[0]},
         "config": _config_summary(),
     }
+
+
+LISTEN_HOST = os.environ.get("IM_BRIDGE_MANAGER_HOST") or ("0.0.0.0" if SERVER_MODE else "127.0.0.1")
+LISTEN_PORT = int(os.environ.get("IM_BRIDGE_MANAGER_PORT") or 8765)
 
 
 _state_port = [0]
@@ -167,6 +252,19 @@ def _save_config(payload: dict) -> dict:
     if bot_manager.is_running():
         warnings.append("bot 正在运行，部分配置需要重启 bot 后生效")
     bot_manager.log("配置已保存", "INFO")
+
+    if REMOTE_MODE:
+        try:
+            pushed = remote_mod.push_config()
+            warnings.append(
+                "已同步到服务器：" + ("、".join(pushed) if pushed else "无变更文件")
+                + "。重启 bot 后生效。"
+            )
+            bot_manager.log("配置已推送到服务器", "INFO")
+        except remote_mod.RemoteError as exc:
+            warnings.append(f"⚠️ 推送服务器失败：{exc}（改动只存在本地缓存）")
+            bot_manager.log(f"配置推送失败：{exc}", "ERROR")
+
     return {"ok": True, "saved": True, "warnings": warnings}
 
 
@@ -290,6 +388,10 @@ def _test_llm(payload: dict) -> dict:
 
 
 def _env_checks(refresh: bool) -> dict:
+    if REMOTE_MODE:
+        return {"ok": True, "checks": remote_mod.env_checks(refresh=refresh)}
+    if SERVER_MODE:
+        return {"ok": True, "checks": bot_manager.env_checks(refresh=refresh)}
     return {"ok": True, "checks": env_check.check_all(refresh=refresh)}
 
 
@@ -347,9 +449,52 @@ class ManagerHandler(BaseHTTPRequestHandler):
         if not origin:
             return True
         parsed = urlparse(origin)
-        if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
-            return False
-        return True
+        if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
+            return True
+        if SERVER_MODE:
+            # 服务器模式：允许同源访问（用公网 IP 或域名打开页面）
+            host_header = (self.headers.get("Host") or "").split(":")[0].strip()
+            if host_header and parsed.hostname == host_header:
+                return True
+        return False
+
+    # ---- 访问口令 ----
+    def _client_token(self, query: dict) -> str:
+        token = (query.get("token") or [""])[0].strip()
+        if token:
+            return token
+        cookie = self.headers.get("Cookie") or ""
+        for part in cookie.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == COOKIE_NAME:
+                return value.strip()
+        return (self.headers.get("X-Auth-Token") or "").strip()
+
+    def _authorized(self, query: dict) -> bool:
+        if not AUTH_TOKEN:
+            return True
+        import secrets
+
+        got = self._client_token(query)
+        return bool(got) and secrets.compare_digest(got, AUTH_TOKEN)
+
+    def _deny_auth(self) -> None:
+        body = (
+            "<!doctype html><meta charset='utf-8'>"
+            "<title>需要访问口令</title>"
+            "<div style='font-family:system-ui;max-width:560px;margin:12vh auto;padding:0 24px;line-height:1.8'>"
+            "<h2>需要访问口令</h2>"
+            "<p>管理台开启了口令保护。请在地址后追加 <code>?token=你的口令</code> 访问一次，"
+            "浏览器会记住登录状态。</p>"
+            "<p style='color:#888;font-size:13px'>口令查看方式：在服务器执行 "
+            "<code>cat /opt/im-bridge/data/manager_token.txt</code></p></div>"
+        )
+        data = body.encode("utf-8")
+        self.send_response(401)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - 静默访问日志
         return
@@ -381,6 +526,18 @@ class ManagerHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
+
+        if not self._authorized(query) and path not in PUBLIC_PATHS:
+            self._deny_auth()
+            return
+        if AUTH_TOKEN and (query.get("token") or [""])[0].strip() and not path.startswith("/api/"):
+            # 口令正确：种 Cookie 后跳转到干净地址，避免口令留在地址栏/历史里
+            self.send_response(302)
+            self.send_header("Set-Cookie", f"{COOKIE_NAME}={AUTH_TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax")
+            self.send_header("Location", path or "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
 
         if path == "/api/ping":
             self._send_json({"ok": True, "app": APP_NAME, "version": APP_VERSION})
@@ -419,9 +576,21 @@ class ManagerHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "settings": load_settings(), "root": str(ROOT)})
             return
         if path == "/api/napcat/status":
+            if REMOTE_MODE:
+                self._send_json({"ok": True, **remote_mod.napcat_status()})
+                return
+            if SERVER_MODE:
+                self._send_json({"ok": True, **bot_manager.napcat_status()})
+                return
             self._send_json({"ok": True, "running": env_check._napcat_process is not None})
             return
         if path == "/api/napcat/update/status":
+            if REMOTE_MODE or SERVER_MODE:
+                self._send_json({
+                    "ok": True, "unsupported": True, "state": "unsupported", "message": "",
+                    "hint": "当前模式下不支持在线更新 NapCat，请在服务器执行 docker pull",
+                })
+                return
             refresh = query.get("refresh", ["0"])[0] in ("1", "true", "yes")
             self._send_json(napcat_update.get_status(refresh=refresh))
             return
@@ -452,6 +621,9 @@ class ManagerHandler(BaseHTTPRequestHandler):
     def _dispatch_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        if not self._authorized(parse_qs(parsed.query)):
+            self._deny_auth()
+            return
         payload = self._read_json()
 
         if path == "/api/config":
@@ -486,6 +658,8 @@ class ManagerHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
         if path == "/api/action/open":
+            if SERVER_MODE:
+                raise ApiError("服务器模式不支持「打开本地文件」，请用 SSH / 宝塔文件管理")
             target = str(payload.get("target") or "")
             try:
                 env_check.open_target(target)
@@ -497,22 +671,49 @@ class ManagerHandler(BaseHTTPRequestHandler):
             settings = load_settings()
             if "auto_restart" in payload:
                 bot_manager.set_auto_restart(bool(payload["auto_restart"]))
-            for key in ("napcat_command", "auto_open", "theme", "port", "napcat_update_mirror"):
+            for key in ("mode", "napcat_command", "auto_open", "theme", "port", "napcat_update_mirror"):
                 if key in payload:
                     settings[key] = payload[key]
             save_settings(settings)
-            self._send_json({"ok": True, "settings": load_settings()})
+            mode_changed = MODE != str(settings.get("mode") or "local").lower()
+            self._send_json({"ok": True, "settings": load_settings(), "restart_required": mode_changed})
             return
         if path == "/api/napcat/start":
+            if SERVER_MODE:
+                try:
+                    self._send_json({"ok": True, **bot_manager.napcat_start()})
+                except RuntimeError as exc:
+                    raise ApiError(str(exc), 400) from exc
+                return
+            if REMOTE_MODE:
+                try:
+                    self._send_json({"ok": True, **remote_mod.napcat_action("start")})
+                except remote_mod.RemoteError as exc:
+                    raise ApiError(str(exc), 400) from exc
+                return
             try:
                 self._send_json({"ok": True, **env_check.start_napcat()})
             except RuntimeError as exc:
                 raise ApiError(str(exc), 400) from exc
             return
         if path == "/api/napcat/stop":
+            if SERVER_MODE:
+                try:
+                    self._send_json({"ok": True, **bot_manager.napcat_stop()})
+                except RuntimeError as exc:
+                    raise ApiError(str(exc), 400) from exc
+                return
+            if REMOTE_MODE:
+                try:
+                    self._send_json({"ok": True, **remote_mod.napcat_action("stop")})
+                except remote_mod.RemoteError as exc:
+                    raise ApiError(str(exc), 400) from exc
+                return
             self._send_json({"ok": True, **env_check.stop_napcat()})
             return
         if path == "/api/napcat/update":
+            if REMOTE_MODE or SERVER_MODE:
+                raise ApiError("当前模式下不支持在线更新 NapCat，请在服务器执行：docker pull mlikiowa/napcat-docker:latest")
             mirror = payload.get("mirror")
             result = napcat_update.start_update(mirror if mirror is not None else None)
             if not result.get("ok"):
@@ -520,10 +721,15 @@ class ManagerHandler(BaseHTTPRequestHandler):
             self._send_json(result)
             return
         if path == "/api/napcat/update/cancel":
+            if REMOTE_MODE or SERVER_MODE:
+                raise ApiError("当前模式不支持该操作")
             self._send_json(napcat_update.cancel_update())
             return
         if path == "/api/shutdown":
-            stopped = bot_manager.stop()["stopped"]
+            if SERVER_MODE:
+                raise ApiError("服务器模式请用 systemctl stop im-bridge-manager 关闭管理台")
+            # 远程模式下关闭管理台不应该停掉服务器上的 bot
+            stopped = False if REMOTE_MODE else bot_manager.stop()["stopped"]
             self._send_json({"ok": True, "stopped_bot": stopped})
             threading.Timer(0.5, self.server.shutdown).start()
             return
@@ -577,7 +783,9 @@ class ManagerServer(ThreadingHTTPServer):
         super().shutdown()
 
 
-def create_server(host: str = "127.0.0.1", port: int = 8765) -> ManagerServer:
+def create_server(host: str | None = None, port: int | None = None) -> ManagerServer:
+    host = host or LISTEN_HOST
+    port = int(port or LISTEN_PORT)
     server = ManagerServer((host, port), ManagerHandler)
     _state_port[0] = server.server_address[1]
     return server
