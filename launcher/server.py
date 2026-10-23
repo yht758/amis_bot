@@ -7,12 +7,14 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import socket
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -85,6 +87,13 @@ AUTH_TOKEN = (os.environ.get("IM_BRIDGE_MANAGER_TOKEN") or "").strip()
 COOKIE_NAME = "im_bridge_mgr"
 AUTH_FILE = ROOT / "data" / "manager_token.txt"
 PUBLIC_PATHS = {"/api/ping"}
+
+# 访问日志：记录来源 IP 与请求结果，便于事后审计（token 一律脱敏）
+ACCESS_LOG = ROOT / "logs" / "manager_access.log"
+ACCESS_LOG_MAX_BYTES = 5 * 1024 * 1024
+_TOKEN_PATTERN = re.compile(r"(token=)[^&\s\"]+")
+# 前端高频轮询路径，写日志会迅速膨胀，默认不记录
+_QUIET_PATHS = ("/api/state", "/api/logs/stream")
 
 
 def _load_or_create_token() -> str:
@@ -508,8 +517,40 @@ class ManagerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - 静默访问日志
-        return
+    def log_message(self, fmt: str, *args) -> None:  # noqa: A003
+        """记录访问日志：时间、来源 IP、请求行、状态码。
+
+        两条硬性约束：
+        1. URL 里的 ``token=`` 一律替换为 ``***``，避免日志泄露管理台口令；
+        2. 前端轮询（/api/state、日志流）不记录，否则一天能写几十万行。
+        """
+        try:
+            message = fmt % args if args else str(fmt)
+        except Exception:  # noqa: BLE001 - 日志失败绝不能影响请求处理
+            message = str(fmt)
+
+        if any(path in message for path in _QUIET_PATHS):
+            return
+        message = _TOKEN_PATTERN.sub(r"\1***", message)
+
+        line = (
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"{self.client_address[0]} {message}\n"
+        )
+        try:
+            ACCESS_LOG.parent.mkdir(parents=True, exist_ok=True)
+            if ACCESS_LOG.exists() and ACCESS_LOG.stat().st_size > ACCESS_LOG_MAX_BYTES:
+                backup = ACCESS_LOG.with_suffix(".log.1")
+                try:
+                    if backup.exists():
+                        backup.unlink()
+                    ACCESS_LOG.rename(backup)
+                except OSError:
+                    pass
+            with ACCESS_LOG.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:
+            pass
 
     # ---- 路由 ----
     def do_GET(self) -> None:  # noqa: N802
