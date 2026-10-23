@@ -28,7 +28,13 @@
   const CONFIG_KEYS = [
     'base_url', 'model', 'bot_qq', 'respond_to_groups', 'allowed_users', 'admin_users',
     'napcat_ws_url', 'max_history', 'summary_enabled', 'summary_threshold', 'summary_keep_recent',
-    'streaming_enabled', 'chunking_enabled', 'chunk_min_delay', 'chunk_max_delay', 'persona'
+    'summary_async', 'summary_token_threshold',
+    'streaming_enabled', 'chunking_enabled', 'chunk_min_delay', 'chunk_max_delay',
+    'chunk_max_segments', 'message_max_chars',
+    'proactive_enabled', 'proactive_idle_hours', 'proactive_max_per_day', 'proactive_quiet_hours',
+    'voice_input_enabled', 'voice_reply_enabled', 'asr_endpoint', 'tts_endpoint',
+    'voice_max_seconds', 'voice_path_map',
+    'persona'
   ];
   const SETTINGS_KEYS = ['napcat_command', 'auto_open', 'auto_restart'];
   const SNAPSHOT_KEYS = CONFIG_KEYS.concat(SETTINGS_KEYS);
@@ -156,10 +162,24 @@
       summary_enabled: true,
       summary_threshold: 24,
       summary_keep_recent: 8,
+      summary_async: true,
+      summary_token_threshold: 1800,
       streaming_enabled: true,
       chunking_enabled: true,
       chunk_min_delay: 1,
       chunk_max_delay: 2,
+      chunk_max_segments: 8,
+      message_max_chars: 1000,
+      proactive_enabled: false,
+      proactive_idle_hours: 24,
+      proactive_max_per_day: 1,
+      proactive_quiet_hours: '23:00-08:00',
+      voice_input_enabled: false,
+      voice_reply_enabled: false,
+      asr_endpoint: '',
+      tts_endpoint: '',
+      voice_max_seconds: 60,
+      voice_path_map: '',
       persona: 'aemeath',
       napcat_command: '',
       auto_open: true,
@@ -799,6 +819,20 @@
     form.chunking_enabled = asBool(read('chunking_enabled', true));
     form.chunk_min_delay = clamp(asNum(read('chunk_min_delay', 1), 1), 0, 5);
     form.chunk_max_delay = clamp(asNum(read('chunk_max_delay', 2), 2), 0, 5);
+    form.chunk_max_segments = clamp(asInt(read('chunk_max_segments', 8), 8), 0, 30);
+    form.message_max_chars = clamp(asInt(read('message_max_chars', 1000), 1000), 50, 2000);
+    form.summary_async = asBool(read('summary_async', true));
+    form.summary_token_threshold = clamp(asInt(read('summary_token_threshold', 1800), 1800), 0, 20000);
+    form.proactive_enabled = asBool(read('proactive_enabled', false));
+    form.proactive_idle_hours = clamp(asNum(read('proactive_idle_hours', 24), 24), 1, 720);
+    form.proactive_max_per_day = clamp(asInt(read('proactive_max_per_day', 1), 1), 0, 10);
+    form.proactive_quiet_hours = asStr(read('proactive_quiet_hours', '23:00-08:00'), '23:00-08:00');
+    form.voice_input_enabled = asBool(read('voice_input_enabled', false));
+    form.voice_reply_enabled = asBool(read('voice_reply_enabled', false));
+    form.asr_endpoint = asStr(read('asr_endpoint', ''), '');
+    form.tts_endpoint = asStr(read('tts_endpoint', ''), '');
+    form.voice_max_seconds = clamp(asInt(read('voice_max_seconds', 60), 60), 1, 300);
+    form.voice_path_map = asStr(read('voice_path_map', ''), '');
     form.persona = asStr(read('persona', 'aemeath'), 'aemeath');
     app.defaults = data.defaults || {};
     app.savedConfig = snapshotConfig();
@@ -1435,6 +1469,20 @@
       chunking_enabled: !!form.chunking_enabled,
       chunk_min_delay: normalizeDelay(form.chunk_min_delay),
       chunk_max_delay: normalizeDelay(form.chunk_max_delay),
+      chunk_max_segments: asInt(form.chunk_max_segments, 8),
+      message_max_chars: asInt(form.message_max_chars, 1000),
+      summary_async: !!form.summary_async,
+      summary_token_threshold: asInt(form.summary_token_threshold, 1800),
+      proactive_enabled: !!form.proactive_enabled,
+      proactive_idle_hours: asNum(form.proactive_idle_hours, 24),
+      proactive_max_per_day: asInt(form.proactive_max_per_day, 1),
+      proactive_quiet_hours: String(form.proactive_quiet_hours || '').trim(),
+      voice_input_enabled: !!form.voice_input_enabled,
+      voice_reply_enabled: !!form.voice_reply_enabled,
+      asr_endpoint: String(form.asr_endpoint || '').trim(),
+      tts_endpoint: String(form.tts_endpoint || '').trim(),
+      voice_max_seconds: asInt(form.voice_max_seconds, 60),
+      voice_path_map: String(form.voice_path_map || '').trim(),
       persona: String(form.persona || '').trim()
     };
   }
@@ -1556,10 +1604,24 @@
     renderTags('admin_users');
     setSwitch($('#f-respond-groups'), form.respond_to_groups);
     setSwitch($('#f-summary-enabled'), form.summary_enabled);
+    setSwitch($('#f-summary-async'), form.summary_async);
     setSwitch($('#f-streaming-enabled'), form.streaming_enabled);
     setSwitch($('#f-chunking-enabled'), form.chunking_enabled);
+    setSwitch($('#f-proactive-enabled'), form.proactive_enabled);
+    setSwitch($('#f-voice-input'), form.voice_input_enabled);
+    setSwitch($('#f-voice-reply'), form.voice_reply_enabled);
     setSwitch($('#f-auto-open'), form.auto_open);
     setSwitch($('#f-auto-restart'), form.auto_restart);
+    setValue('#f-summary-token', form.summary_token_threshold);
+    setValue('#f-chunk-segments', form.chunk_max_segments);
+    setValue('#f-message-max', form.message_max_chars);
+    setValue('#f-proactive-idle', form.proactive_idle_hours);
+    setValue('#f-proactive-max', form.proactive_max_per_day);
+    setValue('#f-proactive-quiet', form.proactive_quiet_hours);
+    setValue('#f-asr-endpoint', form.asr_endpoint);
+    setValue('#f-tts-endpoint', form.tts_endpoint);
+    setValue('#f-voice-max', form.voice_max_seconds);
+    setValue('#f-voice-path-map', form.voice_path_map);
     refreshContextControls({ clamp: true });
     refreshChunkControls();
   }
@@ -1649,7 +1711,10 @@
     // 文本字段
     const textBindings = [
       ['#f-base-url', 'base_url'], ['#f-bot-qq', 'bot_qq'], ['#f-napcat-ws', 'napcat_ws_url'],
-      ['#f-persona', 'persona'], ['#f-napcat-command', 'napcat_command']
+      ['#f-persona', 'persona'], ['#f-napcat-command', 'napcat_command'],
+      ['#f-proactive-quiet', 'proactive_quiet_hours'],
+      ['#f-asr-endpoint', 'asr_endpoint'], ['#f-tts-endpoint', 'tts_endpoint'],
+      ['#f-voice-path-map', 'voice_path_map']
     ];
     textBindings.forEach(([selector, key]) => {
       const input = $(selector);
@@ -1718,8 +1783,12 @@
     // 开关
     bindSwitch('#f-respond-groups', 'respond_to_groups');
     bindSwitch('#f-summary-enabled', 'summary_enabled', () => refreshContextControls({ clamp: false }));
+    bindSwitch('#f-summary-async', 'summary_async');
     bindSwitch('#f-streaming-enabled', 'streaming_enabled', () => refreshChunkControls());
     bindSwitch('#f-chunking-enabled', 'chunking_enabled', () => refreshChunkControls());
+    bindSwitch('#f-proactive-enabled', 'proactive_enabled');
+    bindSwitch('#f-voice-input', 'voice_input_enabled');
+    bindSwitch('#f-voice-reply', 'voice_reply_enabled');
     bindSwitch('#f-auto-open', 'auto_open');
     bindSwitch('#f-auto-restart', 'auto_restart');
 
@@ -1745,6 +1814,28 @@
     bindNumberPair('#f-chunk-max', '#f-chunk-max-num', 'chunk_max_delay', {
       min: 0, max: 5, step: 0.1, integer: false,
       onChange: () => refreshChunkControls()
+    });
+
+    // 新增数值字段（单输入框）
+    [
+      ['#f-chunk-segments', 'chunk_max_segments', 0, 30, true],
+      ['#f-message-max', 'message_max_chars', 50, 2000, true],
+      ['#f-summary-token', 'summary_token_threshold', 0, 20000, true],
+      ['#f-proactive-idle', 'proactive_idle_hours', 1, 720, false],
+      ['#f-proactive-max', 'proactive_max_per_day', 0, 10, true],
+      ['#f-voice-max', 'voice_max_seconds', 1, 300, true]
+    ].forEach(([selector, key, min, max, integer]) => {
+      const input = $(selector);
+      if (!input) return;
+      input.addEventListener('input', () => {
+        const parsed = integer ? asInt(input.value, app.form[key]) : asNum(input.value, app.form[key]);
+        app.form[key] = clamp(parsed, min, max);
+        updateDirty();
+        renderMetrics();
+      });
+      input.addEventListener('blur', () => {
+        input.value = String(app.form[key]);
+      });
     });
 
     // tags

@@ -469,6 +469,10 @@
                 <div class="switch-row-text"><span>启用摘要压缩</span><p>超过阈值时把早期对话压缩为摘要，保留最近若干条原文。</p></div>
                 <button class="switch" id="f-summary-enabled" type="button" role="switch" aria-checked="true" aria-label="启用摘要压缩"><span class="switch-thumb"></span></button>
               </div>
+              <div class="switch-row">
+                <div class="switch-row-text"><span>后台异步摘要</span><p>压缩在后台执行，不占用当前回复的等待时间；关闭则同步压缩。</p></div>
+                <button class="switch" id="f-summary-async" type="button" role="switch" aria-checked="true" aria-label="后台异步摘要"><span class="switch-thumb"></span></button>
+              </div>
             </div>
             <div class="slider-field" id="field-threshold">
               <div class="slider-head">
@@ -485,6 +489,11 @@
               </div>
               <input class="range" id="f-summary-keep" type="range" min="0" max="198" step="1">
               <div class="slider-scale"><span>0</span><span>阈值下限</span></div>
+            </div>
+            <div class="field">
+              <label for="f-summary-token">token 触发阈值</label>
+              <div class="num-wrap"><input class="num-input" id="f-summary-token" type="number" min="200" max="20000" step="100" inputmode="numeric" aria-label="token 触发阈值"><span class="unit">tokens</span></div>
+              <p class="hint">按估算 token 追加触发条件；中文约 1 字 ≈ 1 token，0 表示只看条数。</p>
             </div>
             <p class="inline-alert" id="ctx-warning" hidden role="alert"></p>
           </div>
@@ -532,6 +541,90 @@
             </div>
             <p class="inline-alert" id="chunk-warning" hidden role="alert"></p>
             <p class="hint">每条分片之间随机等待该区间内的时长；数值越小回复越连贯。</p>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="f-chunk-segments">单次最多分几条</label>
+              <div class="num-wrap"><input class="num-input" id="f-chunk-segments" type="number" min="0" max="30" inputmode="numeric" aria-label="单次最多分几条"><span class="unit">条</span></div>
+              <p class="hint">0 表示不限制；建议 4~10，太多会刷屏。</p>
+            </div>
+            <div class="field">
+              <label for="f-message-max">单条字数上限</label>
+              <div class="num-wrap"><input class="num-input" id="f-message-max" type="number" min="50" max="2000" step="50" inputmode="numeric" aria-label="单条字数上限"><span class="unit">字</span></div>
+              <p class="hint">超过自动拆条；QQ 建议不超过 1500。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section card" id="sec-proactive" data-glow>
+          <div class="card-head">
+            <span class="card-icon tone-amber"><svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg></span>
+            <div class="card-head-text">
+              <h2>主动会话</h2>
+              <p>让 Bot 在合适时机主动搭话。默认关闭，开启后仍受静默时段、每日上限与冷却约束。</p>
+            </div>
+          </div>
+          <div class="switch-list">
+            <div class="switch-row">
+              <div class="switch-row-text"><span>允许主动发起聊天</span><p>关闭时 Bot 只被动回复，绝不主动打扰。</p></div>
+              <button class="switch" id="f-proactive-enabled" type="button" role="switch" aria-checked="false" aria-label="允许主动发起聊天"><span class="switch-thumb"></span></button>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="f-proactive-idle">闲置多少小时后搭话</label>
+              <div class="num-wrap"><input class="num-input" id="f-proactive-idle" type="number" min="1" max="720" step="1" inputmode="numeric" aria-label="闲置多少小时后搭话"><span class="unit">小时</span></div>
+            </div>
+            <div class="field">
+              <label for="f-proactive-max">每人每天最多</label>
+              <div class="num-wrap"><input class="num-input" id="f-proactive-max" type="number" min="0" max="10" inputmode="numeric" aria-label="每人每天最多几条"><span class="unit">条</span></div>
+              <p class="hint">0 表示不主动，建议 1~2。</p>
+            </div>
+            <div class="field">
+              <label for="f-proactive-quiet">静默时段</label>
+              <input id="f-proactive-quiet" type="text" spellcheck="false" autocomplete="off" placeholder="23:00-08:00" aria-describedby="hint-quiet">
+              <p class="hint" id="hint-quiet">格式 HH:MM-HH:MM，可跨零点；留空表示不限制。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section card" id="sec-voice" data-glow>
+          <div class="card-head">
+            <span class="card-icon tone-pink"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg></span>
+            <div class="card-head-text">
+              <h2>语音</h2>
+              <p>语音转文字与语音回复；需要 OpenAI 兼容的 ASR / TTS 接口，未配置时自动跳过。</p>
+            </div>
+          </div>
+          <div class="switch-list">
+            <div class="switch-row">
+              <div class="switch-row-text"><span>接收语音并转写</span><p>把收到的语音转成文字后参与对话；转写失败则忽略该条消息。</p></div>
+              <button class="switch" id="f-voice-input" type="button" role="switch" aria-checked="false" aria-label="接收语音并转写"><span class="switch-thumb"></span></button>
+            </div>
+            <div class="switch-row">
+              <div class="switch-row-text"><span>用语音回复</span><p>在文字回复后附带一条合成语音；合成失败自动降级为纯文字。</p></div>
+              <button class="switch" id="f-voice-reply" type="button" role="switch" aria-checked="false" aria-label="用语音回复"><span class="switch-thumb"></span></button>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="f-asr-endpoint">转写接口地址</label>
+              <input id="f-asr-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.openai.com/v1/audio/transcriptions">
+            </div>
+            <div class="field">
+              <label for="f-tts-endpoint">合成接口地址</label>
+              <input id="f-tts-endpoint" type="text" spellcheck="false" autocomplete="off" placeholder="https://api.openai.com/v1/audio/speech">
+            </div>
+            <div class="field">
+              <label for="f-voice-max">语音最长时长</label>
+              <div class="num-wrap"><input class="num-input" id="f-voice-max" type="number" min="1" max="300" inputmode="numeric" aria-label="语音最长时长"><span class="unit">秒</span></div>
+              <p class="hint">超过该时长的语音直接忽略。</p>
+            </div>
+            <div class="field">
+              <label for="f-voice-path-map">语音文件路径映射</label>
+              <input id="f-voice-path-map" type="text" spellcheck="false" autocomplete="off" placeholder="/app/.config/QQ=/www/wwwroot/napcat/qq">
+              <p class="hint">NapCat 在 Docker 里时必填，格式「容器路径=宿主机路径」。</p>
+            </div>
           </div>
         </div>
 
