@@ -50,8 +50,14 @@ remote_mod = None
 service_mod = None
 
 if REMOTE_MODE:
-    import remote as remote_mod
-    from remote import RemoteBotManager
+    try:
+        import remote as remote_mod
+        from remote import RemoteBotManager
+    except ImportError:
+        raise SystemExit(
+            "remote 模式需要 remote.py（作者自用的远程管理扩展，未包含在开源版）。\n"
+            "如果你只想管理本机，请把 data/launcher_settings.json 里的 mode 改回 local。"
+        )
 
     bot_manager = RemoteBotManager()
     try:
@@ -60,7 +66,13 @@ if REMOTE_MODE:
     except Exception as exc:  # 拉取失败不应阻塞管理台启动
         print(f"[warn] 远程配置拉取失败：{exc}")
 elif SERVER_MODE:
-    import service_manager as service_mod
+    try:
+        import service_manager as service_mod
+    except ImportError:
+        raise SystemExit(
+            "server 模式需要 service_manager.py（作者自用的云端管理扩展，未包含在开源版）。\n"
+            "如果你只想管理本机，请把 data/launcher_settings.json 里的 mode 改回 local。"
+        )
 
     bot_manager = service_mod.SystemdBotManager()
 else:

@@ -62,3 +62,9 @@ bot_error.txt
 napcat_loader_out.txt
 redirect_test.txt
 python-*.exe
+
+# ---- 个人部署扩展（云服务器 / 远程管理，不进入开源版） ----
+# 开源版只提供本地部署（local 模式）；以下文件是作者自用的云端玩法
+launcher/remote.py
+launcher/service_manager.py
+launcher/serve.py

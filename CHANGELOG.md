@@ -23,7 +23,7 @@
 
 ### 变更
 
-- 管理台新增**服务器模式**：可在云端直接管理 bot（`systemctl` / `journalctl` / `docker`），带口令鉴权；`APP_VERSION` 提升到 2.1.0。
+- 管理台 `APP_VERSION` 提升到 2.1.0，配置页补齐本次新增的 14 项配置（分片上限、单条字数上限、异步摘要、token 阈值、主动会话、语音），保存后提示重启生效。
 - `ChatEngine` 支持可选的 `synthesizer`，语音发送失败不影响文字回复。
 - `ContextManager.maybe_compress()` 现在会返回「本轮是否同步完成压缩」，异步模式下返回 `False`。
 - 分片器 `ChunkStreamer` 新增 `max_segments` 参数与 `sent_count` 属性；`next_delay()` 新增 `boundary` 参数（均向后兼容）。
