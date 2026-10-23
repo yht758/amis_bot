@@ -2,6 +2,43 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，版本号使用 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.1.0] - 2026-10-23
+
+围绕 5 个 issue 完成一轮能力升级，全部功能默认安全（语音/主动会话默认关闭）。
+
+### 新增
+
+- **配置字段表 `FIELD_SPECS`（#3）**：把「默认值 / 校验规则 / `--check-config` 展示」收敛到单一事实来源，新增配置项只需加一行 + `.env.example` 一条，`tests/test_config_specs.py` 会守住一致性。
+- **配置报错四要素（#3）**：每条错误现在都带「字段名、来源（环境变量 / .env / config.secret.json / config.json / 默认值）、当前值、修复建议」，`--check-config` 退出码非 0，便于脚本与 CI 判断。
+- **保护区式分片（#1）**：代码块、行内代码、URL 内部不再被切断；流式中未闭合的代码块整段保护。
+- **边界感知延迟（#1）**：句末停顿最久（×1.0）、换行更长（×1.15）、逗号更短（×0.6）、硬切几乎不停（×0.4），更接近真人节奏。
+- **段数与长度上限（#1）**：`AMIS_CHUNK_MAX_SEGMENTS` 限制单次回复条数，`AMIS_MESSAGE_MAX_CHARS` 按平台上限自动拆条（关闭分片时同样生效）。
+- **摘要后台异步化（#2）**：`AMIS_SUMMARY_ASYNC=true` 时压缩在后台任务执行，不阻塞当前回复；每用户一把锁 + 单飞去重，避免并发重复压缩。
+- **token 估算阈值（#2）**：`AMIS_SUMMARY_TOKEN_THRESHOLD` 按估算 token 触发摘要，不再只看消息条数；新增 `estimate_tokens()`。
+- **摘要落盘（#2）**：摘要写入 `data/summaries/<uid>.json`，重启后不丢；`/reset` 会一并清除。
+- **主动会话（#4）**：新增 `core/proactive.py`，支持闲置时长触发、每日上限、跨零点静默时段、6 小时冷却；默认关闭（`AMIS_PROACTIVE_ENABLED=false`）。
+- **语音输入（#5）**：`core/voice.py` 的 `VoiceTranscriber` 调用 OpenAI 兼容 `/v1/audio/transcriptions` 转写语音，失败则忽略该条消息；`AMIS_VOICE_PATH_MAP` 解决 NapCat 容器内路径到宿主机路径的映射。
+- **语音回复（#5）**：`SpeechSynthesizer` 调用 `/v1/audio/speech` 合成语音，以 `base64://` 内联发送，避免容器读不到宿主机临时文件；失败自动降级为纯文字。
+- **传输层通用 API 调用**：`OneBotTransport.call_api()` + `handle_response()`，支持 `get_record` 等需要请求-响应匹配的接口。
+
+### 变更
+
+- 管理台新增**服务器模式**：可在云端直接管理 bot（`systemctl` / `journalctl` / `docker`），带口令鉴权；`APP_VERSION` 提升到 2.1.0。
+- `ChatEngine` 支持可选的 `synthesizer`，语音发送失败不影响文字回复。
+- `ContextManager.maybe_compress()` 现在会返回「本轮是否同步完成压缩」，异步模式下返回 `False`。
+- 分片器 `ChunkStreamer` 新增 `max_segments` 参数与 `sent_count` 属性；`next_delay()` 新增 `boundary` 参数（均向后兼容）。
+
+### 修复
+
+- 达到段数上限后，流式仍每批 delta 单独成条、导致实际发送条数远超上限的问题。
+- 流式未闭合代码块在缓冲区末尾被切开的问题。
+- 多处密钥字段在 `--check-config` 中共用同一个脱敏值的问题，现按字段各自脱敏。
+
+### 测试
+
+- 新增 `test_config_specs.py`（7）、`test_chunker.py`（16）、`test_voice.py`（13）、`test_proactive.py`（19）、`test_engine_integration.py`（5）。
+- 合计 82 个离线用例全绿，原有 22 项 `test_core.py` 行为保持不变。
+
 ## [2.0.0] - 2026-10-22
 
 ### 新增

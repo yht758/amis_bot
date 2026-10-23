@@ -6,6 +6,7 @@ OneBot v11 传输层 —— 通过 WebSocket 与 NapCat / go-cqhttp 等实现通
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -15,13 +16,14 @@ logger = logging.getLogger("im_bridge.onebot.transport")
 
 
 class OneBotTransport:
-    """封装 OneBot v11 的 WebSocket 连接与 ``send_private_msg`` 调用。"""
+    """封装 OneBot v11 的 WebSocket 连接、消息发送与通用 API 调用。"""
 
     def __init__(self, ws_url: str, logger_: logging.Logger | None = None) -> None:
         self.ws_url = ws_url
         self.logger = logger_ or logger
         self.ws = None
         self._echo_counter = 0
+        self._pending: dict[str, asyncio.Future] = {}
 
     @property
     def connected(self) -> bool:
@@ -58,8 +60,63 @@ class OneBotTransport:
     async def close(self) -> None:
         ws = self.ws
         self.ws = None
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(RuntimeError("连接已关闭"))
+        self._pending.clear()
         if ws is not None:
             try:
                 await ws.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    # ---------- 通用 API 调用 ----------
+    async def call_api(
+        self, action: str, params: dict | None = None, timeout: float = 15.0
+    ):
+        """调用 OneBot API 并等待对应响应。
+
+        响应由 ``handle_response`` 从事件流中挑出来（按 echo 匹配）。
+        失败时抛 ``RuntimeError``，调用方自行决定是否降级。
+        """
+        if self.ws is None:
+            raise RuntimeError("WebSocket 未连接")
+
+        self._echo_counter += 1
+        echo = f"api-{self._echo_counter}"
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending[echo] = future
+        payload = {"action": action, "params": params or {}, "echo": echo}
+        try:
+            await self.ws.send(json.dumps(payload, ensure_ascii=False))
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            self._pending.pop(echo, None)
+
+    def handle_response(self, data: dict) -> bool:
+        """若该事件是 API 响应则完成对应 Future 并返回 True。"""
+        echo = data.get("echo")
+        if not echo or "post_type" in data:
+            return False
+        future = self._pending.get(str(echo))
+        if future is None or future.done():
+            return False
+
+        retcode = data.get("retcode")
+        failed = data.get("status") == "failed" or data.get("retcode") not in (0, None)
+        if failed:
+            reason = data.get("wording") or data.get("message") or f"retcode={retcode}"
+            future.set_exception(RuntimeError(str(reason)))
+        else:
+            future.set_result(data.get("data"))
+        return True
+
+    async def send_record(self, user_id: int, file: str) -> None:
+        """发送语音消息；``file`` 支持 http(s)、base64:// 或容器内路径。"""
+        await self.call_api(
+            "send_private_msg",
+            {
+                "user_id": int(user_id),
+                "message": [{"type": "record", "data": {"file": file}}],
+            },
+        )

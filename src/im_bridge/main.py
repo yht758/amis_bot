@@ -13,11 +13,13 @@ import sys
 
 from .adapters.onebot.app import OneBotApp
 from .adapters.onebot.transport import OneBotTransport
-from .config import DATA_DIR, Config
+from .config import DATA_DIR, FIELD_SPECS, Config
 from .core.context import ContextManager
 from .core.engine import ChatEngine
 from .core.llm import LLMClient
+from .core.proactive import ProactiveScheduler
 from .core.state import StateManager
+from .core.voice import SpeechSynthesizer, VoiceTranscriber
 from .log_writer import append_log
 from .personas import load_persona
 
@@ -53,13 +55,52 @@ def _print_errors(errors: list[str]) -> None:
 
 
 def _check_config(config: Config) -> int:
-    errors = config.validate()
-    print("配置来源优先级：环境变量 > .env > config.secret.json > config.json")
+    """打印完整字段表 + 问题清单；有 error 时返回 1（供 CI / 脚本判断）。"""
+    issues = config.validate_issues()
+    errors = [item for item in issues if item.level == "error"]
+    warns = [item for item in issues if item.level == "warning"]
+
+    print(BANNER)
+    print(" 配置检查  ·  来源优先级：环境变量 > .env > config.secret.json > config.json")
+    print(BANNER)
+    print()
+
+    print(f"{'字段':<26}{'当前值':<32}来源")
+    print("-" * 76)
+    for spec in FIELD_SPECS:
+        if spec.kind == "secret":
+            raw = (getattr(config, spec.attr, "") or "").strip()
+            shown = "***（已配置）" if raw else "<未设置>"
+        else:
+            value = getattr(config, spec.attr, None)
+            if isinstance(value, (list, tuple)):
+                shown = ",".join(str(item) for item in value) or "（空）"
+            elif value == "" or value is None:
+                shown = "（空）"
+            else:
+                shown = str(value)
+        if len(shown) > 30:
+            shown = shown[:29] + "…"
+        print(f"{spec.env:<26}{shown:<32}{config.sources.get(spec.env, '默认值')}")
+
+    print()
+
+    if warns:
+        print(f"警告 {len(warns)} 条（不阻断启动）：")
+        for item in warns:
+            print(f"  ! {item}")
+        print()
+
     if errors:
-        _print_errors(errors)
+        print(f"错误 {len(errors)} 条：")
+        for item in errors:
+            print(f"  × {item}")
+        print()
+        print("修复方式：编辑 .env（推荐），或 config.json / config.secret.json，")
+        print("也可用环境变量覆盖。字段说明见 .env.example。")
         return 1
-    print("  [OK] 配置校验通过")
-    print(f"  {config.summary()}")
+
+    print("[OK] 配置校验通过。")
     return 0
 
 
@@ -71,6 +112,9 @@ def _build_app(config: Config) -> OneBotApp:
         summary_enabled=config.summary_enabled,
         summary_threshold=config.summary_threshold,
         summary_keep_recent=config.summary_keep_recent,
+        async_summary=config.summary_async,
+        token_threshold=config.summary_token_threshold,
+        persist_dir=DATA_DIR / "summaries",
     )
     llm = LLMClient(
         api_key=config.api_key,
@@ -78,6 +122,17 @@ def _build_app(config: Config) -> OneBotApp:
         model=config.model,
     )
     transport = OneBotTransport(config.napcat_ws_url)
+
+    # 语音：未配 endpoint 时这两个对象自身会「未启用」，不会产生任何请求
+    transcriber = VoiceTranscriber(
+        endpoint=config.asr_endpoint,
+        api_key=config.asr_api_key or config.api_key,
+    )
+    synthesizer = SpeechSynthesizer(
+        endpoint=config.tts_endpoint,
+        api_key=config.tts_api_key or config.api_key,
+    )
+
     engine = ChatEngine(
         config=config,
         llm=llm,
@@ -85,8 +140,24 @@ def _build_app(config: Config) -> OneBotApp:
         state_manager=state_manager,
         transport=transport,
         persona=persona,
+        synthesizer=synthesizer,
     )
-    return OneBotApp(config=config, engine=engine, transport=transport)
+
+    proactive = ProactiveScheduler(
+        config=config,
+        llm=llm,
+        context=context_manager,
+        state=state_manager,
+        transport=transport,
+    )
+
+    return OneBotApp(
+        config=config,
+        engine=engine,
+        transport=transport,
+        transcriber=transcriber,
+        proactive=proactive,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

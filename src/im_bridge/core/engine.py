@@ -11,19 +11,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import random
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
 from ..config import Config
 from ..log_writer import append_log
 from ..personas import Persona
 from ..ports import MessageTransport
-from .chunker import ChunkStreamer, next_delay, split_chunks
+from .chunker import ChunkStreamer, boundary_of, next_delay, split_chunks
 from .commands import CommandResult, CommandRouter
 from .context import ContextManager
 from .llm import LLMClient, LLMError
 from .state import StateManager
+from .voice import SpeechSynthesizer
 
 logger = logging.getLogger("im_bridge.engine")
 
@@ -43,6 +47,7 @@ class ChatEngine:
         state_manager: StateManager,
         transport: MessageTransport,
         persona: Persona,
+        synthesizer: SpeechSynthesizer | None = None,
         logger_: logging.Logger | None = None,
     ) -> None:
         self.config = config
@@ -51,6 +56,7 @@ class ChatEngine:
         self.state = state_manager
         self.transport = transport
         self.persona = persona
+        self.synthesizer = synthesizer
         self.logger = logger_ or logger
         self.started_at = datetime.now()
         self.commands = CommandRouter(config, state_manager, context_manager, self.started_at)
@@ -97,6 +103,7 @@ class ChatEngine:
             self.context.append_assistant(user_id, reply)
             append_log("answers.log", f"[{nickname}({user_id})] {reply}")
             self.logger.info("[回复->%s]: %s", nickname or user_id, reply[:80])
+            await self._send_voice(uid, reply)
             return False
 
         except LLMError as exc:
@@ -117,6 +124,37 @@ class ChatEngine:
         except Exception as exc:  # noqa: BLE001
             self.logger.error("发送消息失败：%s", exc)
 
+    async def _send_voice(self, user_id: int, text: str) -> None:
+        """可选：把文本回复合成语音一并发出（失败绝不影响文字回复）。"""
+        if not self.config.voice_reply_enabled:
+            return
+        if self.synthesizer is None or not self.synthesizer.enabled:
+            return
+        if not hasattr(self.transport, "send_record"):
+            self.logger.warning("当前传输层不支持发送语音，跳过语音回复")
+            return
+
+        text = (text or "").strip()
+        if not text:
+            return
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="im-bridge-voice-") as tmp:
+                out = Path(tmp) / "reply.mp3"
+                path = await self.synthesizer.synthesize(text, out)
+                if path is None:
+                    return
+                data = path.read_bytes()
+                if len(data) > 5 * 1024 * 1024:
+                    self.logger.warning("合成语音超过 5MB，放弃发送")
+                    return
+                # NapCat 跑在容器里读不到宿主机临时路径，用 base64 内联传输
+                encoded = "base64://" + base64.b64encode(data).decode("ascii")
+                await self.transport.send_record(user_id, encoded)
+                self.logger.info("[语音->%s] 已发送 %.1f KB", user_id, len(data) / 1024)
+        except Exception as exc:  # noqa: BLE001 - 语音是锦上添花，失败不影响文字
+            self.logger.warning("发送语音失败：%s", exc)
+
     # ---------- 回复生成 ----------
     async def _reply(self, user_id: int, messages: list[dict]) -> str:
         """生成并发送回复，返回完整回复文本（用于写入上下文）。"""
@@ -124,7 +162,7 @@ class ChatEngine:
 
         if self.config.streaming_enabled:
             full: list[str] = []
-            streamer = ChunkStreamer()
+            streamer = ChunkStreamer(max_segments=self.config.chunk_max_segments)
             stream_failed = False
             try:
                 async for delta in self.llm.stream(messages):
@@ -142,8 +180,8 @@ class ChatEngine:
                     for chunk in streamer.flush():
                         sent += await self._send_piece(user_id, chunk, sent)
                 else:
-                    # 关闭分片时：流式仅用于降低首字延迟，内容仍整段一次发送
-                    await self.transport.send_text(user_id, reply)
+                    # 关闭分片：流式只用于降低首字延迟，内容按平台上限拆条发送
+                    sent += await self._send_piece(user_id, reply, sent)
                 return reply
 
             # 没有任何内容：可能是端点不支持 SSE，回退为一次性补全
@@ -152,23 +190,52 @@ class ChatEngine:
         reply = await self.llm.complete(messages)
 
         if self.config.chunking_enabled:
-            for chunk in split_chunks(reply):
+            for chunk in split_chunks(
+                reply, max_segments=self.config.chunk_max_segments
+            ):
                 sent += await self._send_piece(user_id, chunk, sent)
         else:
-            await self.transport.send_text(user_id, reply)
-            sent += 1
+            sent += await self._send_piece(user_id, reply, sent)
         return reply
 
     async def _send_piece(self, user_id: int, text: str, sent_count: int) -> int:
-        """发送一个分片；非首片前加入 1~2 秒随机延迟，模拟打字节奏。"""
+        """发送一个分片（必要时按平台长度上限再拆），返回实际发出的条数。"""
         text = (text or "").strip()
         if not text:
             return 0
-        if sent_count > 0:
-            delay = next_delay(
-                self.config.chunk_min_delay, self.config.chunk_max_delay, self._rng
-            )
-            if delay > 0:
-                await asyncio.sleep(delay)
-        await self.transport.send_text(user_id, text)
-        return 1
+
+        count = 0
+        for piece in self._limit_pieces(text):
+            piece = piece.strip()
+            if not piece:
+                continue
+            if sent_count + count > 0:
+                # 句末停顿最久、逗号最短，硬切几乎不停 —— 更像真人喘气
+                delay = next_delay(
+                    self.config.chunk_min_delay,
+                    self.config.chunk_max_delay,
+                    self._rng,
+                    boundary=boundary_of(piece),
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            await self.transport.send_text(user_id, piece)
+            count += 1
+        return count
+
+    def _limit_pieces(self, text: str) -> list[str]:
+        """按 AMIS_MESSAGE_MAX_CHARS 拆条；已在上限内则原样返回。"""
+        limit = int(self.config.message_max_chars or 0)
+        if limit <= 0 or len(text) <= limit:
+            return [text]
+        pieces = split_chunks(text, min_len=1, max_len=limit, max_segments=0)
+        result: list[str] = []
+        for piece in pieces:
+            if len(piece) <= limit:
+                result.append(piece)
+            else:
+                # 保护区超长等极端情况：按硬长度兜底，保证一定能发出去
+                result.extend(
+                    piece[index : index + limit] for index in range(0, len(piece), limit)
+                )
+        return result or [text]
