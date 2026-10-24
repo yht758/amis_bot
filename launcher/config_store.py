@@ -272,11 +272,19 @@ def _mask_key(value: str) -> str:
     return f"{prefix}（已配置，长度 {len(value)}）"
 
 
-def load_config() -> dict[str, Any]:
-    """返回 {"fields": {key: {value, from}}, "api_key": {...}, "errors": [...]}"""
-    env_file = parse_env(ENV_PATH)
-    config_json = read_json_file(CONFIG_PATH)
-    secret_json = read_json_file(SECRET_PATH)
+def load_config(
+    config_path: Path | None = None,
+    env_path: Path | None = None,
+    secret_path: Path | None = None,
+) -> dict[str, Any]:
+    """返回 {"fields": {key: {value, from}}, "api_key": {...}, "errors": [...]}
+
+    多实例下传入该实例的 ``config_path``；``env_path`` / ``secret_path`` 默认仍指向
+    根目录，即所有实例共享同一份密钥，避免每个实例各存一份导致轮换时漏改。
+    """
+    env_file = parse_env(env_path or ENV_PATH)
+    config_json = read_json_file(config_path or CONFIG_PATH)
+    secret_json = read_json_file(secret_path or SECRET_PATH)
     errors: list[str] = []
     fields: dict[str, dict[str, Any]] = {}
 
@@ -449,7 +457,11 @@ def validate_values(values: dict[str, Any]) -> list[str]:
 # --------------------------------------------------------------------------
 # 保存
 # --------------------------------------------------------------------------
-def save_config(payload: dict[str, Any], current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+def save_config(
+    payload: dict[str, Any],
+    current_values: dict[str, Any] | None = None,
+    config_path: Path | None = None,
+) -> dict[str, Any]:
     """保存配置。api_key 为空表示沿用原值。
 
     返回 {"warnings": [...]}；校验失败抛 ConfigError（消息可展示）。
@@ -484,7 +496,9 @@ def save_config(payload: dict[str, Any], current_values: dict[str, Any] | None =
     update_env_file(env_updates, env_remove)
 
     # 2) 其余配置写 config.json，保留未知字段
-    config_json = read_json_file(CONFIG_PATH)
+    #    多实例下 target 指向该实例自己的配置文件；密钥仍统一写根 .env（共享）
+    target = config_path or CONFIG_PATH
+    config_json = read_json_file(target)
     warnings: list[str] = []
     for spec in SCHEMA:
         key = spec["key"]
@@ -492,7 +506,7 @@ def save_config(payload: dict[str, Any], current_values: dict[str, Any] | None =
             continue
         value = coerce(spec, payload[key])
         config_json[spec["json"]] = value
-    write_json_file(CONFIG_PATH, config_json)
+    write_json_file(target, config_json)
 
     if os.environ.get("AMIS_API_KEY") and new_key and os.environ["AMIS_API_KEY"] != new_key:
         warnings.append("当前进程环境变量 AMIS_API_KEY 会覆盖 .env 中的新密钥，建议重启管理台或清除该环境变量")

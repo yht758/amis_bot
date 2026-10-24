@@ -68,3 +68,8 @@ python-*.exe
 launcher/remote.py
 launcher/service_manager.py
 launcher/serve.py
+
+# ---- 多实例运行时数据（3.0） ----
+instances.json
+instances/
+backups/

@@ -19,11 +19,16 @@
 
   const ROUTES = {
     overview: { title: '概览', eyebrow: 'DASHBOARD', subtitle: '一眼掌握 Bot 的运行状态与关键指标' },
+    instances: { title: '实例管理', eyebrow: 'INSTANCES', subtitle: '多个 QQ 号独立运行，配置、人设、日志与数据互不干扰' },
     settings: { title: '配置', eyebrow: 'CONFIGURATION', subtitle: '模型、权限、上下文与拟真输出节奏' },
     logs: { title: '日志', eyebrow: 'LIVE LOGS', subtitle: '实时追踪 Bot 与 OneBot 链路的输出' },
     env: { title: '环境', eyebrow: 'ENVIRONMENT', subtitle: '依赖、端口与运行环境的自检结果' },
     about: { title: '关于', eyebrow: 'ABOUT', subtitle: '版本信息、常用命令与免责声明' }
   };
+  const INSTANCE_KEY = 'im_bridge_instance';
+  const INSTANCE_DEFAULT_PERSONA = 'aemeath';
+  const INSTANCE_DEFAULT_WS = 'ws://127.0.0.1:3001';
+  const INSTANCE_ID_RE = /^[a-z0-9_-]+$/;
 
   const CONFIG_KEYS = [
     'base_url', 'model', 'bot_qq', 'respond_to_groups', 'allowed_users', 'admin_users',
@@ -132,6 +137,19 @@
     try { localStorage.setItem('aemeath.theme', theme); } catch (err) { /* 隐私模式下忽略 */ }
   }
 
+  function readStoredInstance() {
+    try {
+      return localStorage.getItem(INSTANCE_KEY) || '';
+    } catch (err) { return ''; }
+  }
+
+  function storeInstance(id) {
+    try {
+      if (id) localStorage.setItem(INSTANCE_KEY, id);
+      else localStorage.removeItem(INSTANCE_KEY);
+    } catch (err) { /* 隐私模式下忽略 */ }
+  }
+
   /* ---------------- 应用状态 ---------------- */
   const app = {
     demo: DEMO,
@@ -206,6 +224,14 @@
     es: null,
     connecting: false,
     lastFocus: null,
+    instances: [],
+    instancesSupported: null,
+    instancesLoaded: false,
+    instancesAt: 0,
+    instanceSignature: '',
+    currentInstance: readStoredInstance(),
+    instanceBusy: {},
+    instanceModalBusy: false,
     firstRoute: true
   };
 
@@ -232,6 +258,7 @@
       if (!response.ok || !data || data.ok === false) {
         const message = (data && data.error) || (response.status ? `请求失败（HTTP ${response.status}）` : '管理台返回了无效数据');
         const error = new Error(message);
+        error.status = response.status;
         error.details = data && Array.isArray(data.details) ? data.details : [];
         throw error;
       }
@@ -339,6 +366,18 @@
       persona: 'aemeath'
     };
     demo.settings = { napcat_command: 'start_napcat.bat', auto_restart: false, auto_open: true };
+    demo.instances = [
+      {
+        id: 'default', name: '主号', enabled: true, bot_qq: '123456789', persona: 'aemeath',
+        onebot_ws_url: 'ws://127.0.0.1:3001',
+        status: { state: 'running', pid: demo.pid, uptime: 4372, onebot_ok: true }
+      },
+      {
+        id: 'alt', name: '副号', enabled: true, bot_qq: '987654321', persona: 'aemeath',
+        onebot_ws_url: 'ws://127.0.0.1:3002',
+        status: { state: 'stopped', pid: null, uptime: 0, onebot_ok: false }
+      }
+    ];
     demo.envChecks = [
       { id: 'python', title: 'Python 运行时', status: 'ok', detail: 'Python 3.14.0（64 位）', hint: '' },
       { id: 'deps', title: 'Python 依赖', status: 'ok', detail: 'websockets 17.0.1 · httpx 0.28.1 已安装', hint: '' },
@@ -373,6 +412,9 @@
 
     if (cleanPath === '/api/ping' || cleanPath === '/api/version') {
       return { ok: true, app: 'im-bridge-manager', version: APP_VERSION };
+    }
+    if (cleanPath === '/api/instances' || cleanPath.indexOf('/api/instances/') === 0) {
+      return mockInstancesApi(cleanPath, options, body);
     }
     if (cleanPath === '/api/state') return demoStateSnapshot();
     if (cleanPath === '/api/config' && (!options.method || options.method === 'GET')) {
@@ -496,6 +538,108 @@
     }
     if (cleanPath === '/api/napcat/update') return { ok: true, started: true };
     if (cleanPath === '/api/shutdown') return { ok: true };
+    throw new Error('演示模式未覆盖该接口：' + cleanPath);
+  }
+
+  function demoInstanceView(item) {
+    return {
+      id: item.id,
+      name: item.name,
+      enabled: item.enabled,
+      bot_qq: item.bot_qq,
+      persona: item.persona,
+      onebot_ws_url: item.onebot_ws_url,
+      status: {
+        state: item.status.state,
+        pid: item.status.pid,
+        uptime: item.status.uptime,
+        onebot_ok: item.status.onebot_ok
+      }
+    };
+  }
+
+  function mockInstancesApi(cleanPath, options, body) {
+    const method = options.method || 'GET';
+    if (cleanPath === '/api/instances') {
+      if (method === 'POST') {
+        const id = asStr(body.id, '').trim();
+        if (!INSTANCE_ID_RE.test(id)) throw new Error('实例 ID 只允许小写字母、数字、下划线与短横线');
+        if (demo.instances.some((item) => item.id === id)) throw new Error('实例 ID 已存在：' + id);
+        const item = {
+          id: id,
+          name: asStr(body.name, '') || id,
+          enabled: true,
+          bot_qq: asStr(body.bot_qq, ''),
+          persona: asStr(body.persona, '') || INSTANCE_DEFAULT_PERSONA,
+          onebot_ws_url: asStr(body.onebot_ws_url, '') || INSTANCE_DEFAULT_WS,
+          status: { state: 'stopped', pid: null, uptime: 0, onebot_ok: false }
+        };
+        demo.instances.push(item);
+        return { ok: true, instance: demoInstanceView(item) };
+      }
+      return { ok: true, instances: demo.instances.map(demoInstanceView) };
+    }
+    if (cleanPath === '/api/instances/start-all' || cleanPath === '/api/instances/stop-all') {
+      const start = cleanPath.indexOf('start-all') > 0;
+      demo.instances.forEach((item) => {
+        item.status.state = start ? 'running' : 'stopped';
+        item.status.pid = start ? 24000 + Math.floor(Math.random() * 900) : null;
+        item.status.uptime = 0;
+        item.status.onebot_ok = start;
+      });
+      return { ok: true, affected: demo.instances.length };
+    }
+    const match = /^\/api\/instances\/([^/]+)(\/[a-z-]+)?$/.exec(cleanPath);
+    if (!match) throw new Error('演示模式未覆盖该接口：' + cleanPath);
+    const id = decodeURIComponent(match[1]);
+    const suffix = match[2] || '';
+    const item = demo.instances.filter((entry) => entry.id === id)[0];
+    if (!item) throw new Error('实例不存在：' + id);
+
+    if (suffix === '' && method === 'DELETE') {
+      demo.instances = demo.instances.filter((entry) => entry.id !== id);
+      return { ok: true, backup: 'backups/instances/' + id };
+    }
+    if (suffix === '' && method === 'PATCH') {
+      ['name', 'persona', 'onebot_ws_url', 'bot_qq'].forEach((key) => {
+        if (body[key] !== undefined) item[key] = asStr(body[key], item[key]);
+      });
+      if (body.enabled !== undefined) item.enabled = asBool(body.enabled);
+      return { ok: true, instance: demoInstanceView(item) };
+    }
+    if (suffix === '') return { ok: true, instance: demoInstanceView(item), status: item.status };
+    if (suffix === '/start' || suffix === '/stop' || suffix === '/restart') {
+      const start = suffix !== '/stop';
+      item.status.state = start ? 'running' : 'stopped';
+      item.status.pid = start ? 24000 + Math.floor(Math.random() * 900) : null;
+      item.status.uptime = 0;
+      item.status.onebot_ok = start;
+      return { ok: true };
+    }
+    if (suffix === '/config') {
+      if (method === 'POST') {
+        CONFIG_KEYS.forEach((key) => {
+          if (body[key] !== undefined) demo.config[key] = body[key];
+        });
+        return { ok: true, saved: true, warnings: [] };
+      }
+      return clone(demo.configResponse);
+    }
+    if (suffix === '/logs') {
+      return { ok: true, lines: clone(demo.logs.slice(-asInt(qs.get('tail'), 300))) };
+    }
+    if (suffix === '/state') {
+      return {
+        ok: true,
+        status: {
+          state: item.status.state,
+          pid: item.status.pid,
+          uptime: item.status.uptime,
+          onebot_ok: item.status.onebot_ok,
+          bot_qq: item.bot_qq
+        }
+      };
+    }
     throw new Error('演示模式未覆盖该接口：' + cleanPath);
   }
 
@@ -758,8 +902,8 @@
   async function refreshState(options) {
     const opts = options || {};
     try {
-      const raw = await api('/api/state', { timeout: opts.poll ? 6000 : 9000 });
-      app.state = normalizeState(raw);
+      const raw = await api(stateEndpoint(), { timeout: opts.poll ? 6000 : 9000 });
+      app.state = instanceMode() ? normalizeInstanceState(raw) : normalizeState(raw);
       app.stateAt = Date.now();
       app.stateFailures = 0;
       if (app.action === 'starting' && app.state.bot.running) app.action = null;
@@ -781,7 +925,10 @@
   function updateConnSub() {
     if (!app.state) return;
     const sub = $('#conn-sub');
-    if (sub && app.conn !== 'demo') sub.textContent = app.state.server.host + ':' + app.state.server.port;
+    const server = app.state.server || {};
+    if (sub && app.conn !== 'demo' && server.host && server.port) {
+      sub.textContent = server.host + ':' + server.port;
+    }
   }
 
   function applySettings(raw) {
@@ -847,6 +994,7 @@
 
   async function loadAllData(options) {
     const opts = options || {};
+    if (app.instancesSupported === null) await loadInstances({ silent: true });
     if (!app.settingsLoaded) {
       try {
         const settings = await api('/api/settings');
@@ -858,7 +1006,7 @@
     }
     if (!app.configLoaded) {
       try {
-        const config = await api('/api/config');
+        const config = await api(configEndpoint());
         applyConfig(config);
       } catch (error) {
         toastError(error, '加载配置失败');
@@ -867,7 +1015,7 @@
     await refreshState({ poll: true });
     if (!app.logsLoaded) {
       try {
-        const logs = await api('/api/logs?tail=300&level=all');
+        const logs = await api(logsEndpoint());
         setLogs(logs.lines);
       } catch (error) {
         app.logsLoaded = true;
@@ -926,6 +1074,9 @@
     app.timers.poll = window.setInterval(() => {
       if (document.hidden || app.offline) return;
       refreshState({ poll: true });
+      if (app.route === 'instances' && app.instancesSupported && Date.now() - app.instancesAt > 5000) {
+        loadInstances({ silent: true });
+      }
     }, POLL_MS);
   }
 
@@ -1028,6 +1179,347 @@
     requestAnimationFrame(moveNavIndicator);
   }
 
+  /* ---------------- 多实例 ---------------- */
+  function currentInstanceId() {
+    return app.currentInstance || readStoredInstance() || 'default';
+  }
+
+  function instancePath(suffix) {
+    return '/api/instances/' + encodeURIComponent(currentInstanceId()) + suffix;
+  }
+
+  // 三个端点按「后端是否支持多实例」自动切换，老后端时回落到单实例接口
+  function configEndpoint() {
+    return app.instancesSupported ? instancePath('/config') : '/api/config';
+  }
+
+  function logsEndpoint() {
+    return app.instancesSupported ? instancePath('/logs') : '/api/logs';
+  }
+
+  function stateEndpoint() {
+    return app.instancesSupported ? instancePath('/state') : '/api/state';
+  }
+
+  function formatUptime(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (!total) return '—';
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    if (hours) return hours + ' 小时 ' + minutes + ' 分';
+    if (minutes) return minutes + ' 分 ' + (total % 60) + ' 秒';
+    return total + ' 秒';
+  }
+
+  async function loadInstances(options) {
+    const opts = options || {};
+    try {
+      const data = await api('/api/instances');
+      const items = data.instances || [];
+      app.instances = items;
+      app.instancesSupported = true;
+      app.instancesLoaded = true;
+      app.instancesAt = Date.now();
+
+      const saved = readStoredInstance();
+      const exists = items.some((item) => item.id === saved);
+      app.currentInstance = exists ? saved : (items.length ? items[0].id : 'default');
+      storeInstance(app.currentInstance);
+
+      renderInstances();
+      renderInstanceSwitcher();
+    } catch (error) {
+      // 老后端没有 /api/instances：回退单实例，不打断使用
+      app.instancesSupported = false;
+      app.instancesLoaded = true;
+      app.instances = [];
+      app.currentInstance = 'default';
+      if (!opts.silent) {
+        toast({ type: 'warn', title: '实例接口不可用', message: '已回退到单实例模式：' + error.message });
+      }
+    }
+  }
+
+  function buildInstanceBadge(status) {
+    const state = (status && status.state) || 'stopped';
+    const meta = {
+      running: { text: '运行中', tone: 'ok' },
+      stopped: { text: '已停止', tone: 'neutral' },
+      starting: { text: '启动中', tone: 'info' },
+      stopping: { text: '停止中', tone: 'warn' },
+      error: { text: '异常', tone: 'danger' }
+    }[state] || { text: '未知', tone: 'neutral' };
+    const badge = el('span', 'status-badge', meta.text);
+    badge.dataset.tone = meta.tone;
+    return badge;
+  }
+
+  function buildInstanceCard(item) {
+    const status = item.status || {};
+    const running = status.state === 'running' || status.state === 'starting';
+    const card = el('article', 'card instance-card');
+    card.dataset.instance = item.id;
+
+    const head = el('div', 'instance-card-head');
+    const titleBox = el('div', 'instance-card-title');
+    titleBox.appendChild(el('h3', '', item.name || item.id));
+    titleBox.appendChild(el('span', 'instance-card-id', item.id));
+    head.appendChild(titleBox);
+    head.appendChild(buildInstanceBadge(status));
+    card.appendChild(head);
+
+    const meta = el('dl', 'instance-card-meta');
+    [
+      ['QQ', item.bot_qq || '未设置'],
+      ['人设', item.persona || '—'],
+      ['OneBot', item.onebot_ws_url || '—'],
+      ['PID', running && status.pid ? String(status.pid) : '—'],
+      ['运行时长', running ? formatUptime(status.uptime) : '—']
+    ].forEach(([label, value]) => {
+      meta.appendChild(el('dt', '', label));
+      meta.appendChild(el('dd', '', value));
+    });
+    card.appendChild(meta);
+
+    const actions = el('div', 'instance-card-actions');
+    const mkButton = (text, className, handler) => {
+      const button = el('button', className, text);
+      button.type = 'button';
+      button.addEventListener('click', handler);
+      return button;
+    };
+
+    if (running) {
+      actions.appendChild(mkButton('停止', 'btn btn-ghost btn-sm', () => instanceAction(item.id, 'stop')));
+      actions.appendChild(mkButton('重启', 'btn btn-secondary btn-sm', () => instanceAction(item.id, 'restart')));
+    } else {
+      actions.appendChild(mkButton('启动', 'btn btn-primary btn-sm', () => instanceAction(item.id, 'start')));
+    }
+    actions.appendChild(mkButton('进入配置', 'btn btn-ghost btn-sm', () => useInstance(item.id, 'settings')));
+    actions.appendChild(mkButton('日志', 'btn btn-ghost btn-sm', () => useInstance(item.id, 'logs')));
+    if (item.id !== 'default') {
+      actions.appendChild(mkButton('删除', 'btn btn-ghost btn-sm', () => deleteInstance(item.id, item.name)));
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderInstances() {
+    const grid = $('#instance-grid');
+    const empty = $('#instance-empty');
+    const summary = $('#instance-summary');
+    if (!grid) return;
+
+    const items = app.instances || [];
+    const runningCount = items.filter((item) => item.status && item.status.state === 'running').length;
+    if (summary) {
+      summary.textContent = items.length
+        ? '共 ' + items.length + ' 个实例，' + runningCount + ' 个运行中'
+        : '还没有实例';
+    }
+
+    grid.innerHTML = '';
+    if (!items.length) {
+      if (empty) empty.hidden = false;
+      return;
+    }
+    if (empty) empty.hidden = true;
+    items.forEach((item) => grid.appendChild(buildInstanceCard(item)));
+  }
+
+  function renderInstanceSwitcher() {
+    const select = $('#instance-select');
+    if (!select) return;
+    const items = app.instances || [];
+    select.innerHTML = '';
+    items.forEach((item) => {
+      const option = document.createElement('option');
+      option.value = item.id;
+      option.textContent = item.name && item.name !== item.id
+        ? item.name + '（' + item.id + '）'
+        : item.id;
+      if (item.id === currentInstanceId()) option.selected = true;
+      select.appendChild(option);
+    });
+    select.hidden = items.length <= 1;
+  }
+
+  async function useInstance(instanceId, route) {
+    if (!instanceId) return;
+    storeInstance(instanceId);
+    app.currentInstance = instanceId;
+    // 切实例后配置与日志都要按新实例重新取
+    app.configLoaded = false;
+    app.logsLoaded = false;
+    renderInstanceSwitcher();
+
+    if (route) navigate(route);
+
+    if (app.route === 'settings') {
+      try {
+        applyConfig(await api(configEndpoint()));
+      } catch (error) {
+        toastError(error, '切换实例后加载配置失败');
+      }
+    }
+    if (app.route === 'logs') {
+      try {
+        const logs = await api(logsEndpoint() + '?tail=300');
+        setLogs(logs.lines);
+        connectLogStream();
+      } catch (error) {
+        toastError(error, '切换实例后加载日志失败');
+      }
+    }
+    if (app.route === 'overview') {
+      await refreshState({ poll: false });
+    }
+  }
+
+  async function instanceAction(instanceId, action) {
+    try {
+      await api('/api/instances/' + encodeURIComponent(instanceId) + '/' + action, {
+        method: 'POST',
+        body: {}
+      });
+      await loadInstances({ silent: true });
+      if (app.route === 'overview' && instanceId === currentInstanceId()) {
+        await refreshState({ poll: false });
+      }
+    } catch (error) {
+      toastError(error, '实例 ' + action + ' 失败');
+    }
+  }
+
+  async function deleteInstance(instanceId, name) {
+    const label = name || instanceId;
+    const ok = window.confirm(
+      '删除实例「' + label + '」？\n\n' +
+      '配置与数据会移动到 backups/instances/ 备份，不会立即丢失；\n' +
+      '但该实例的 QQ 号将不再由管理台启动。'
+    );
+    if (!ok) return;
+    try {
+      const result = await api('/api/instances/' + encodeURIComponent(instanceId), { method: 'DELETE' });
+      toast({
+        type: 'ok',
+        title: '实例已删除',
+        message: result.backup ? '已备份到 ' + result.backup : '实例已移除'
+      });
+      if (currentInstanceId() === instanceId) {
+        storeInstance('default');
+        app.currentInstance = 'default';
+      }
+      await loadInstances({ silent: true });
+    } catch (error) {
+      toastError(error, '删除实例失败');
+    }
+  }
+
+  function openInstanceModal() {
+    const modal = $('#instance-modal');
+    if (!modal) return;
+    const form = $('#instance-form');
+    if (form) form.reset();
+    const error = $('#instance-form-error');
+    if (error) {
+      error.textContent = '';
+      error.hidden = true;
+    }
+    modal.hidden = false;
+    const first = $('#f-inst-id');
+    if (first) first.focus();
+  }
+
+  function closeInstanceModal() {
+    const modal = $('#instance-modal');
+    if (modal) modal.hidden = true;
+  }
+
+  async function submitInstanceForm(event) {
+    if (event) event.preventDefault();
+    const value = (selector) => {
+      const node = $(selector);
+      return node ? node.value.trim() : '';
+    };
+    const errorBox = $('#instance-form-error');
+    const showError = (message) => {
+      if (!errorBox) return;
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+    };
+
+    const instanceId = value('#f-inst-id');
+    if (!INSTANCE_ID_RE.test(instanceId)) {
+      showError('实例 ID 只允许小写字母、数字、下划线或短横线');
+      return;
+    }
+
+    const submit = $('#btn-instance-submit');
+    if (submit) submit.disabled = true;
+    try {
+      await api('/api/instances', {
+        method: 'POST',
+        body: {
+          id: instanceId,
+          name: value('#f-inst-name') || instanceId,
+          bot_qq: value('#f-inst-qq'),
+          persona: value('#f-inst-persona') || INSTANCE_DEFAULT_PERSONA,
+          onebot_ws_url: value('#f-inst-ws') || INSTANCE_DEFAULT_WS
+        }
+      });
+      closeInstanceModal();
+      toast({ type: 'ok', title: '实例已创建', message: '可在列表中启动它' });
+      await loadInstances({ silent: true });
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  }
+
+  function initInstanceControls() {
+    const bind = (selector, handler) => {
+      const node = $(selector);
+      if (node) node.addEventListener('click', handler);
+    };
+    bind('#btn-instance-new', openInstanceModal);
+    bind('#btn-instance-cancel', closeInstanceModal);
+    bind('#btn-instance-start-all', async () => {
+      try {
+        const result = await api('/api/instances/start-all', { method: 'POST', body: {} });
+        toast({ type: 'ok', title: '已全部启动', message: '启动 ' + (result.affected || 0) + ' 个实例' });
+        await loadInstances({ silent: true });
+      } catch (error) {
+        toastError(error, '批量启动失败');
+      }
+    });
+    bind('#btn-instance-stop-all', async () => {
+      try {
+        const result = await api('/api/instances/stop-all', { method: 'POST', body: {} });
+        toast({ type: 'ok', title: '已全部停止', message: '停止 ' + (result.affected || 0) + ' 个实例' });
+        await loadInstances({ silent: true });
+      } catch (error) {
+        toastError(error, '批量停止失败');
+      }
+    });
+
+    const form = $('#instance-form');
+    if (form) form.addEventListener('submit', submitInstanceForm);
+
+    const select = $('#instance-select');
+    if (select) {
+      select.addEventListener('change', () => useInstance(select.value, null));
+    }
+
+    const modal = $('#instance-modal');
+    if (modal) {
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal) closeInstanceModal();
+      });
+    }
+  }
+
   function renderRoute(route, options) {
     const opts = options || {};
     if (!ROUTES[route]) route = 'overview';
@@ -1066,6 +1558,11 @@
     if (route === 'env') {
       if (!app.env && (DEMO || app.conn === 'online')) loadEnv(false);
       else renderEnv();
+    }
+    if (route === 'instances') {
+      renderInstances();
+      renderInstanceSwitcher();
+      if (!app.instancesLoaded && !app.offline) loadInstances({ silent: false });
     }
     if (route === 'about') renderAbout();
     if (route === 'overview') {
@@ -1523,7 +2020,7 @@
     app.saving = true;
     setSaveLoading(true);
     try {
-      const result = await api('/api/config', { method: 'POST', body: buildConfigPayload(), timeout: 20000 });
+      const result = await api(configEndpoint(), { method: 'POST', body: buildConfigPayload(), timeout: 20000 });
       if (settingsKeys.length) {
         await api('/api/settings', {
           method: 'POST',
@@ -1535,7 +2032,7 @@
           timeout: 12000
         });
       }
-      if (app.form.auto_restart !== prevAutoRestart) {
+      if (app.form.auto_restart !== prevAutoRestart && !instanceMode()) {
         try {
           await api('/api/bot/auto-restart', { method: 'POST', body: { enabled: !!app.form.auto_restart } });
         } catch (error) {
@@ -1547,7 +2044,7 @@
       app.savedConfig = snapshotConfig();
       app.baseline = snapshotForm();
       try {
-        const raw = await api('/api/config');
+        const raw = await api(configEndpoint());
         app.keySet = !!(raw.fields && raw.fields.api_key && raw.fields.api_key.set);
         app.keyMasked = asStr(raw.fields && raw.fields.api_key && raw.fields.api_key.masked, app.keyMasked);
       } catch (error) { /* 保持旧掩码 */ }
@@ -2145,7 +2642,11 @@
     }
     const server = $('#ov-server');
     if (server) {
-      server.textContent = app.state ? '管理服务 ' + app.state.server.host + ':' + app.state.server.port : '管理服务 ' + API_BASE.replace(/^https?:\/\//, '');
+      const host = app.state && app.state.server ? app.state.server.host : '';
+      const port = app.state && app.state.server ? app.state.server.port : null;
+      server.textContent = host && port
+        ? '管理服务 ' + host + ':' + port
+        : '管理服务 ' + API_BASE.replace(/^https?:\/\//, '');
     }
     const autoRestartText = $('#ov-auto-restart-text');
     const autoDot = $('#ov-auto-restart-dot');
@@ -2282,9 +2783,9 @@
     renderHero();
     try {
       let response;
-      if (kind === 'start') response = await api('/api/bot/start', { method: 'POST', timeout: 15000 });
-      else if (kind === 'stop') response = await api('/api/bot/stop', { method: 'POST', timeout: 15000 });
-      else response = await api('/api/bot/restart', { method: 'POST', timeout: 15000 });
+      if (kind === 'start') response = await api(botActionEndpoint('start'), { method: 'POST', timeout: 15000 });
+      else if (kind === 'stop') response = await api(botActionEndpoint('stop'), { method: 'POST', timeout: 15000 });
+      else response = await api(botActionEndpoint('restart'), { method: 'POST', timeout: 15000 });
       if (kind === 'start') {
         if (response.already) toast({ type: 'info', title: 'Bot 已在运行' });
         else toast({ type: 'success', title: '启动指令已发送', message: response.pid ? 'PID ' + response.pid : '正在等待进程就绪…' });
@@ -2549,7 +3050,7 @@
 
   async function loadLogsInitial() {
     try {
-      const response = await api('/api/logs?tail=300&level=all');
+      const response = await api(logsEndpoint());
       setLogs(response.lines);
     } catch (error) {
       app.logsLoaded = true;
@@ -2557,11 +3058,14 @@
     }
   }
 
+  function closeLogStream() {
+    if (!app.es) return;
+    try { app.es.close(); } catch (error) { /* 忽略关闭异常 */ }
+    app.es = null;
+  }
+
   function connectLogStream() {
-    if (app.es) {
-      app.es.close();
-      app.es = null;
-    }
+    closeLogStream();
     if (DEMO) {
       setSseState('demo');
       startDemoLogStream();
@@ -2573,7 +3077,7 @@
     }
     setSseState('reconnecting');
     try {
-      const source = new EventSource(API_BASE + '/api/logs/stream');
+      const source = new EventSource(API_BASE + logStreamUrl());
       app.es = source;
       source.onopen = () => setSseState('live');
       source.onmessage = (event) => {
@@ -3265,6 +3769,7 @@
     document.body.dataset.demo = DEMO ? '1' : '0';
     initTheme();
     bindAll();
+    initInstanceControls();
     renderRoute(routeFromHash(), { silentScroll: true });
     if (DEMO) {
       app.offline = false;

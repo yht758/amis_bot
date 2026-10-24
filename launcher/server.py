@@ -20,7 +20,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import env_check
+import instance_config
 import napcat_update
+from instance_manager import instance_manager
 from config_store import (
     APP_NAME,
     APP_VERSION,
@@ -214,20 +216,26 @@ def _onebot_status() -> dict:
     return {"reachable": reachable, "host": "127.0.0.1", "port": port, "url": url}
 
 
-def _state() -> dict:
+def _state(instance_id: str = "default") -> dict:
     if REMOTE_MODE:
         target = remote_mod.read_deploy_env()["host"]
     elif SERVER_MODE:
         target = f"systemd://{socket.gethostname()}"
     else:
         target = "127.0.0.1"
+    try:
+        process = instance_manager.require_process(instance_id)
+        bot_status = process.status()
+    except Exception as exc:  # noqa: BLE001 - 实例缺失时仍要返回管理台自身状态
+        bot_status = {"state": "unknown", "error": str(exc)}
     return {
         "ok": True,
         "version": APP_VERSION,
         "mode": MODE,
         "target": target,
         "hostname": socket.gethostname(),
-        "bot": bot_manager.status(),
+        "instance": instance_id,
+        "bot": bot_status,
         "onebot": _onebot_status(),
         "server": {"host": LISTEN_HOST, "port": _state_port[0]},
         "config": _config_summary(),
@@ -241,8 +249,14 @@ LISTEN_PORT = int(os.environ.get("IM_BRIDGE_MANAGER_PORT") or 8765)
 _state_port = [0]
 
 
-def _config_payload() -> dict:
-    data = load_config()
+def _config_payload(instance_id: str = "default") -> dict:
+    # default 实例直接用根 config.json；其他实例读自己的配置文件
+    config_path = None
+    if instance_id != "default":
+        instance = instance_config.require_instance(instance_id)
+        config_path = instance_config.config_path_of(instance)
+
+    data = load_config(config_path=config_path)
     fields = {}
     for key, item in data["fields"].items():
         fields[key] = {"value": item["value"], "from": item.get("from", "")}
@@ -259,6 +273,32 @@ def _config_payload() -> dict:
         "defaults": {key: DEFAULTS[key] for key in DEFAULTS},
         "errors": data.get("errors", []),
     }
+
+
+def _create_instance(payload: dict) -> dict:
+    """创建实例：复制根配置作为模板，密钥仍走共享 .env。"""
+    try:
+        instance = instance_config.create_instance(
+            instance_id=str(payload.get("id") or ""),
+            name=str(payload.get("name") or ""),
+            bot_qq=str(payload.get("bot_qq") or ""),
+            persona=str(payload.get("persona") or ""),
+            onebot_ws_url=str(payload.get("onebot_ws_url") or ""),
+        )
+    except instance_config.InstanceError as exc:
+        raise ApiError(str(exc), 400) from exc
+    return {"ok": True, "instance": instance}
+
+
+def _save_instance_config(instance_id: str, payload: dict) -> dict:
+    """保存某实例的配置；default 写根 config.json，其余写自身配置文件。"""
+    instance = instance_config.require_instance(instance_id)
+    config_path = None if instance_id == "default" else instance_config.config_path_of(instance)
+    data = load_config(config_path=config_path)
+    current = {key: item["value"] for key, item in data["fields"].items()}
+    current.pop("api_key", None)
+    result = save_config(payload, current_values=current, config_path=config_path)
+    return {"ok": True, **result}
 
 
 def _save_config(payload: dict) -> dict:
@@ -575,6 +615,64 @@ class ManagerHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self._send_json({"ok": False, "error": f"服务端异常：{exc}"}, 500)
 
+    def do_PATCH(self) -> None:  # noqa: N802
+        try:
+            if not self._origin_ok():
+                raise ApiError("非法来源请求", 403)
+            self._dispatch_mutation("PATCH")
+        except ApiError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, exc.status)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"ok": False, "error": f"服务端异常：{exc}"}, 500)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        try:
+            if not self._origin_ok():
+                raise ApiError("非法来源请求", 403)
+            self._dispatch_mutation("DELETE")
+        except ApiError as exc:
+            self._send_json({"ok": False, "error": str(exc)}, exc.status)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:  # noqa: BLE001
+            self._send_json({"ok": False, "error": f"服务端异常：{exc}"}, 500)
+
+    def _dispatch_mutation(self, method: str) -> None:
+        """PATCH / DELETE 只处理实例资源，其余路径返回 405。"""
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        query = parse_qs(parsed.query)
+        if not self._authorized(query):
+            self._deny_auth()
+            return
+
+        match = re.fullmatch(r"/api/instances/([^/]+)", path)
+        if not match:
+            raise ApiError(f"{method} 不支持该路径：{path}", 405)
+        instance_id = match.group(1)
+
+        if method == "PATCH":
+            payload = self._read_json()
+            try:
+                instance = instance_config.update_instance(instance_id, payload)
+            except instance_config.InstanceError as exc:
+                raise ApiError(str(exc), 400) from exc
+            self._send_json({"ok": True, "instance": instance})
+            return
+
+        # DELETE：运行中的实例不允许删，避免子进程变孤儿
+        process = instance_manager.process(instance_id)
+        if process.is_running():
+            raise ApiError("实例正在运行，请先停止再删除", 400)
+        keep_backup = (query.get("keep_backup") or ["1"])[0] != "0"
+        try:
+            result = instance_config.delete_instance(instance_id, keep_backup=keep_backup)
+        except instance_config.InstanceError as exc:
+            raise ApiError(str(exc), 400) from exc
+        self._send_json({"ok": True, **result})
+
     def _dispatch_get(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -595,6 +693,44 @@ class ManagerHandler(BaseHTTPRequestHandler):
         if path == "/api/ping":
             self._send_json({"ok": True, "app": APP_NAME, "version": APP_VERSION})
             return
+
+        # ---- 多实例 ----
+        if path == "/api/instances":
+            self._send_json({"ok": True, "instances": instance_manager.list_instances()})
+            return
+        if path == "/api/instances/start-all":
+            self._send_json({"ok": True, **instance_manager.start_all()})
+            return
+        if path == "/api/instances/stop-all":
+            self._send_json({"ok": True, **instance_manager.stop_all()})
+            return
+        instance_match = re.fullmatch(r"/api/instances/([^/]+)(/[a-z-]+)?", path)
+        if instance_match:
+            instance_id = instance_match.group(1)
+            suffix = instance_match.group(2) or ""
+            try:
+                if suffix == "":
+                    payload = instance_manager.status(instance_id)
+                    self._send_json({"ok": True, **payload})
+                    return
+                if suffix == "/config":
+                    self._send_json(_config_payload(instance_id))
+                    return
+                if suffix == "/state":
+                    self._send_json(_state(instance_id))
+                    return
+                if suffix == "/logs":
+                    tail = int((query.get("tail") or ["300"])[0])
+                    lines = instance_manager.process(instance_id).snapshot(tail)
+                    self._send_json({"ok": True, "lines": lines})
+                    return
+                if suffix == "/logs/stream":
+                    self._stream_instance_logs(instance_id)
+                    return
+            except instance_config.InstanceError as exc:
+                raise ApiError(str(exc), 404) from exc
+            raise ApiError(f"未知的实例接口：{path}", 404)
+
         if path == "/api/state":
             self._send_json(_state())
             return
@@ -678,6 +814,39 @@ class ManagerHandler(BaseHTTPRequestHandler):
             self._deny_auth()
             return
         payload = self._read_json()
+
+        # ---- 多实例 ----
+        if path == "/api/instances":
+            self._send_json(_create_instance(payload))
+            return
+        if path == "/api/instances/start-all":
+            self._send_json({"ok": True, **instance_manager.start_all()})
+            return
+        if path == "/api/instances/stop-all":
+            self._send_json({"ok": True, **instance_manager.stop_all()})
+            return
+        instance_match = re.fullmatch(r"/api/instances/([^/]+)(/[a-z-]+)?", path)
+        if instance_match:
+            instance_id = instance_match.group(1)
+            suffix = instance_match.group(2) or ""
+            try:
+                if suffix == "/start":
+                    self._send_json({"ok": True, **instance_manager.start(instance_id)})
+                    return
+                if suffix == "/stop":
+                    self._send_json({"ok": True, **instance_manager.stop(instance_id)})
+                    return
+                if suffix == "/restart":
+                    self._send_json({"ok": True, **instance_manager.restart(instance_id)})
+                    return
+                if suffix == "/config":
+                    self._send_json(_save_instance_config(instance_id, payload))
+                    return
+            except instance_config.InstanceError as exc:
+                raise ApiError(str(exc), 404) from exc
+            except RuntimeError as exc:
+                raise ApiError(str(exc), 400) from exc
+            raise ApiError(f"未知的实例接口：{path}", 404)
 
         if path == "/api/config":
             self._send_json(_save_config(payload))
@@ -816,6 +985,34 @@ class ManagerHandler(BaseHTTPRequestHandler):
             pass
         finally:
             bot_manager.unsubscribe(subscriber)
+
+    def _stream_instance_logs(self, instance_id: str) -> None:
+        """按实例推送日志：订阅者只收到该实例的输出，切换实例时前端重连即可。"""
+        process = instance_manager.process(instance_id)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        subscriber = process.subscribe()
+        shutdown_event = getattr(self.server, "shutdown_event", None)
+        try:
+            self._sse_write({"type": "snapshot", "lines": process.snapshot(300)})
+            while True:
+                if shutdown_event is not None and shutdown_event.is_set():
+                    break
+                try:
+                    line = subscriber.get(timeout=15)
+                    self._sse_write({"type": "append", "line": line})
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            process.unsubscribe(subscriber)
 
     def _sse_write(self, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False)

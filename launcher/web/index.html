@@ -97,25 +97,30 @@
         <span class="nav-label">概览</span>
         <span class="nav-key" aria-hidden="true">1</span>
       </a>
+      <a class="nav-item" href="#/instances" data-route="instances">
+        <svg class="icon nav-icon" aria-hidden="true"><use href="#i-server"/></svg>
+        <span class="nav-label">实例</span>
+        <span class="nav-key" aria-hidden="true">2</span>
+      </a>
       <a class="nav-item" href="#/settings" data-route="settings">
         <svg class="icon nav-icon" aria-hidden="true"><use href="#i-sliders"/></svg>
         <span class="nav-label">配置</span>
-        <span class="nav-key" aria-hidden="true">2</span>
+        <span class="nav-key" aria-hidden="true">3</span>
       </a>
       <a class="nav-item" href="#/logs" data-route="logs">
         <svg class="icon nav-icon" aria-hidden="true"><use href="#i-terminal"/></svg>
         <span class="nav-label">日志</span>
-        <span class="nav-key" aria-hidden="true">3</span>
+        <span class="nav-key" aria-hidden="true">4</span>
       </a>
       <a class="nav-item" href="#/env" data-route="env">
         <svg class="icon nav-icon" aria-hidden="true"><use href="#i-shield"/></svg>
         <span class="nav-label">环境</span>
-        <span class="nav-key" aria-hidden="true">4</span>
+        <span class="nav-key" aria-hidden="true">5</span>
       </a>
       <a class="nav-item" href="#/about" data-route="about">
         <svg class="icon nav-icon" aria-hidden="true"><use href="#i-info"/></svg>
         <span class="nav-label">关于</span>
-        <span class="nav-key" aria-hidden="true">5</span>
+        <span class="nav-key" aria-hidden="true">6</span>
       </a>
     </nav>
 
@@ -150,6 +155,11 @@
         <p class="page-subtitle" id="page-subtitle">一眼掌握 Bot 的运行状态与关键指标</p>
       </div>
       <div class="topbar-actions">
+        <div class="instance-switch" id="instance-switch" hidden>
+          <svg class="icon instance-switch-icon" aria-hidden="true"><use href="#i-server"/></svg>
+          <select id="instance-select" aria-label="切换当前实例"></select>
+          <svg class="icon instance-switch-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+        </div>
         <span class="mode-badge" id="mode-badge" data-mode="connecting">
           <span class="mode-dot" aria-hidden="true"></span>
           <span class="mode-badge-text" id="mode-badge-text">连接中…</span>
@@ -332,6 +342,37 @@
             <div class="glance-item"><span class="eyebrow">管理员</span><strong id="gv-admin">—</strong></div>
             <div class="glance-item"><span class="eyebrow">输出模式</span><strong id="gv-output">—</strong></div>
           </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-instances" data-page="instances" aria-label="实例管理">
+        <div class="instance-toolbar card" data-glow>
+          <div class="instance-toolbar-text">
+            <h2>实例</h2>
+            <p id="instance-summary">正在读取实例列表…</p>
+          </div>
+          <div class="instance-toolbar-actions">
+            <button class="btn btn-primary btn-sm" id="btn-instance-new" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-server"/></svg>
+              <span>新建实例</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" id="btn-instance-start-all" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>
+              <span>全部启动</span>
+            </button>
+            <button class="btn btn-ghost btn-sm" id="btn-instance-stop-all" type="button">
+              <svg class="icon" aria-hidden="true"><use href="#i-stop"/></svg>
+              <span>全部停止</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="instance-grid stagger" id="instance-grid"></div>
+
+        <div class="card instance-empty" id="instance-empty" hidden>
+          <span class="instance-empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg></span>
+          <h3 id="instance-empty-title">还没有实例</h3>
+          <p id="instance-empty-text">每个实例对应一个 QQ 号，拥有独立的配置、人设、日志与数据目录。点击「新建实例」开始。</p>
         </div>
       </section>
 
@@ -913,7 +954,7 @@
               <div class="card-head-text"><h2>键盘快捷键</h2><p>不用鼠标也能完成大部分操作。</p></div>
             </div>
             <div class="shortcut-list">
-              <div class="shortcut-row"><span><kbd>1</kbd> – <kbd>5</kbd></span><span>切换侧边页面</span></div>
+              <div class="shortcut-row"><span><kbd>1</kbd> – <kbd>6</kbd></span><span>切换侧边页面</span></div>
               <div class="shortcut-row"><span><kbd>T</kbd></span><span>切换深 / 浅主题</span></div>
               <div class="shortcut-row"><span><kbd>R</kbd></span><span>立即刷新状态</span></div>
               <div class="shortcut-row"><span><kbd>/</kbd></span><span>日志页聚焦搜索</span></div>
@@ -996,6 +1037,41 @@
 
 <div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
 <div class="modal-root" id="modal-root" hidden></div>
+<div class="modal-root" id="instance-modal" hidden>
+  <form class="modal instance-form" id="instance-form" novalidate aria-labelledby="instance-modal-title">
+    <div class="modal-icon instance-form-icon"><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg></div>
+    <h2 id="instance-modal-title">新建实例</h2>
+    <p>每个实例对应一个 QQ 号，拥有独立的配置、人设、日志与数据目录。</p>
+    <div class="instance-form-grid">
+      <div class="field">
+        <label for="f-inst-id">实例 ID</label>
+        <input id="f-inst-id" type="text" autocomplete="off" spellcheck="false" placeholder="例如 acg_bot" aria-describedby="hint-inst-id">
+        <p class="hint" id="hint-inst-id">只允许小写字母、数字、下划线与短横线，创建后不可修改。</p>
+      </div>
+      <div class="field">
+        <label for="f-inst-name">名称</label>
+        <input id="f-inst-name" type="text" autocomplete="off" spellcheck="false" placeholder="例如 主号">
+      </div>
+      <div class="field">
+        <label for="f-inst-qq">QQ 号</label>
+        <input id="f-inst-qq" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="Bot 使用的 QQ 号">
+      </div>
+      <div class="field">
+        <label for="f-inst-persona">人设</label>
+        <input id="f-inst-persona" type="text" autocomplete="off" spellcheck="false" placeholder="aemeath" value="aemeath">
+      </div>
+      <div class="field field-wide">
+        <label for="f-inst-ws">OneBot 地址</label>
+        <input id="f-inst-ws" type="text" autocomplete="off" spellcheck="false" placeholder="ws://127.0.0.1:3001" value="ws://127.0.0.1:3001">
+      </div>
+    </div>
+    <p class="field-error" id="instance-form-error" hidden></p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="btn-instance-cancel" type="button">取消</button>
+      <button class="btn btn-primary" id="btn-instance-submit" type="submit">创建实例</button>
+    </div>
+  </form>
+</div>
 <div class="exit-overlay" id="exit-overlay" hidden>
   <div class="exit-card">
     <span class="exit-icon"><svg class="icon"><use href="#i-power"/></svg></span>

@@ -2173,3 +2173,43 @@ kbd {
   .napcat-update-meta { grid-template-columns: 1fr; }
   .napcat-progress-text { text-align: left; min-width: 0; }
 }
+
+/* ---------------- 多实例 ---------------- */
+.instance-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+.instance-toolbar-text h2 { margin: 0 0 4px; font-size: 18px; }
+.instance-toolbar-text p { margin: 0; opacity: .7; font-size: 13px; }
+.instance-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.instance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+.instance-card { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.instance-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.instance-card-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.instance-card-title h3 { margin: 0; font-size: 16px; }
+.instance-card-id { font-family: ui-monospace, monospace; font-size: 12px; opacity: .55; }
+.instance-card-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.instance-card-meta dt { opacity: .55; }
+.instance-card-meta dd { margin: 0; word-break: break-all; }
+.instance-card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+
+.instance-empty { text-align: center; padding: 48px 24px; }
+.instance-empty-icon { display: block; margin-bottom: 12px; opacity: .4; }
+.instance-empty h3 { margin: 0 0 8px; }
+.instance-empty p { margin: 0 auto; opacity: .65; max-width: 460px; line-height: 1.6; }

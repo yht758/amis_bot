@@ -460,6 +460,7 @@ class Config:
         voice_max_seconds: int = 60,
         voice_path_map: str = "",
         persona: str = DEFAULT_PERSONA,
+        data_dir: Path | str | None = None,
         config_path: Path | None = None,
         load_errors: list[ConfigIssue] | None = None,
         sources: dict[str, str] | None = None,
@@ -497,6 +498,8 @@ class Config:
         self.voice_max_seconds = voice_max_seconds
         self.voice_path_map = voice_path_map
         self.persona = persona
+        # 数据目录：多实例下每实例独立（data/<id>），单实例沿用根 data/
+        self.data_dir = Path(data_dir) if data_dir else DATA_DIR
         self.config_path = config_path or (BASE_DIR / "config.json")
         self.load_errors = list(load_errors or [])
         self.sources = dict(sources or {})
@@ -687,13 +690,26 @@ class Config:
 
     # ---------- 构建 ----------
     @classmethod
-    def from_env_or_file(cls, config_path: Path | str | None = None) -> "Config":
+    def from_env_or_file(
+        cls,
+        config_path: Path | str | None = None,
+        env_dir: Path | str | None = None,
+        data_dir: Path | str | None = None,
+    ) -> "Config":
+        """加载配置。
+
+        多实例场景下三个目录是分开的：
+        - ``config_path``：实例自己的 config.json（如 ``instances/bot2/config.json``）
+        - ``env_dir``：共享密钥目录（根目录的 .env / config.secret.json），默认与配置文件同目录
+        - ``data_dir``：该实例独立的数据目录，默认 ``<配置文件目录>/data``
+        """
         path = Path(config_path).expanduser() if config_path else (BASE_DIR / "config.json")
         base_dir = path.resolve().parent
-        dotenv_keys = load_dotenv(base_dir / ".env")
+        secret_dir = Path(env_dir).expanduser().resolve() if env_dir else base_dir
+        dotenv_keys = load_dotenv(secret_dir / ".env")
 
         data = _read_json(path)
-        secret = _read_json(base_dir / "config.secret.json")
+        secret = _read_json(secret_dir / "config.secret.json")
         issues: list[ConfigIssue] = []
         sources: dict[str, str] = {}
 
@@ -733,5 +749,6 @@ class Config:
             config_path=path,
             load_errors=issues,
             sources=sources,
+            data_dir=Path(data_dir).expanduser() if data_dir else (base_dir / "data"),
             **values,
         )

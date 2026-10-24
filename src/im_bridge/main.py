@@ -13,7 +13,7 @@ import sys
 
 from .adapters.onebot.app import OneBotApp
 from .adapters.onebot.transport import OneBotTransport
-from .config import DATA_DIR, FIELD_SPECS, Config
+from .config import BASE_DIR, FIELD_SPECS, Config
 from .core.context import ContextManager
 from .core.engine import ChatEngine
 from .core.llm import LLMClient
@@ -106,7 +106,7 @@ def _check_config(config: Config) -> int:
 
 def _build_app(config: Config) -> OneBotApp:
     persona = load_persona(config.persona)
-    state_manager = StateManager(DATA_DIR)
+    state_manager = StateManager(config.data_dir)
     context_manager = ContextManager(
         max_history=config.max_history,
         summary_enabled=config.summary_enabled,
@@ -114,7 +114,7 @@ def _build_app(config: Config) -> OneBotApp:
         summary_keep_recent=config.summary_keep_recent,
         async_summary=config.summary_async,
         token_threshold=config.summary_token_threshold,
-        persist_dir=DATA_DIR / "summaries",
+        persist_dir=config.data_dir / "summaries",
     )
     llm = LLMClient(
         api_key=config.api_key,
@@ -161,11 +161,56 @@ def _build_app(config: Config) -> OneBotApp:
     )
 
 
+def _parse_instance(args: list[str]) -> str:
+    """从命令行提取 ``--instance <id>``（多实例场景由管理台注入）。"""
+    for index, token in enumerate(args):
+        if token == "--instance":
+            return args[index + 1].strip() if index + 1 < len(args) else ""
+        if token.startswith("--instance="):
+            return token.split("=", 1)[1].strip()
+    return ""
+
+
+def _load_config(args: list[str]) -> Config:
+    """按实例加载配置。
+
+    实例场景下三者分离：
+    - ``instances/<id>/config.json``：该实例的业务配置
+    - 根目录 ``.env`` / ``config.secret.json``：所有实例共享的密钥
+    - ``data/<id>/``：该实例独立的数据（状态、摘要、日志）
+    """
+    instance_id = _parse_instance(args)
+    if not instance_id:
+        return Config.from_env_or_file()
+
+    if not all(char.islower() or char.isdigit() or char in "_-" for char in instance_id):
+        raise ValueError(
+            f"实例 ID 非法：{instance_id!r}（只允许小写字母、数字、下划线和短横线）"
+        )
+
+    config_path = BASE_DIR / "instances" / instance_id / "config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"实例配置不存在：{config_path}（请先在管理台创建该实例）"
+        )
+
+    return Config.from_env_or_file(
+        config_path,
+        env_dir=BASE_DIR,
+        data_dir=BASE_DIR / "data" / instance_id,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio()
     args = list(sys.argv[1:] if argv is None else argv)
 
-    config = Config.from_env_or_file()
+    try:
+        config = _load_config(args)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[!] 加载配置失败：{exc}")
+        return 2
+
     errors = config.validate()
 
     if "--check-config" in args:
@@ -192,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Bot QQ : {config.bot_qq}")
     print(f"Model  : {config.model}")
     print(f"API    : {config.llm_base_url}")
-    print(f"Data   : {DATA_DIR}")
+    print(f"Data   : {config.data_dir}")
     print(f"Admin  : {config.admin_users or ['<未设置>']}")
     print()
 

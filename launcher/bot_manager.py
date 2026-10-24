@@ -39,9 +39,14 @@ def _detect_level(line: str) -> str:
 
 
 class BotManager:
-    """管理 bot 的独立子进程，并维护一份可订阅的日志缓冲。"""
+    """管理**单个实例**的子进程，并维护一份可订阅的日志缓冲。
 
-    def __init__(self) -> None:
+    多实例场景下，每个实例持有一个独立实例：日志缓冲、订阅者、进程互不干扰。
+    ``instance_id == "default"`` 时沿用根配置（不带 ``--instance``），保证老部署行为不变。
+    """
+
+    def __init__(self, instance_id: str = "default") -> None:
+        self.instance_id = instance_id or "default"
         self._lock = threading.RLock()
         self._lines: collections.deque[dict[str, Any]] = collections.deque(maxlen=MAX_LINES)
         self._subscribers: set[queue.Queue] = set()
@@ -162,9 +167,13 @@ class BotManager:
         with self._lock:
             self._stop_requested = False
             self._exit_code = None
+            # default 实例沿用根配置；其余实例显式传 ID，由 main.py 解析实例路径
+            command = [python, "run.py"]
+            if self.instance_id != "default":
+                command += ["--instance", self.instance_id]
             try:
                 proc = subprocess.Popen(
-                    [python, "run.py"],
+                    command,
                     cwd=str(ROOT),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
