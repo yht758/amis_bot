@@ -149,6 +149,7 @@ def _build_app(config: Config) -> OneBotApp:
         context=context_manager,
         state=state_manager,
         transport=transport,
+        persona_prompt=persona.system_prompt,
     )
 
     return OneBotApp(

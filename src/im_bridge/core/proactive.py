@@ -132,6 +132,7 @@ class ProactiveScheduler:
         clock: Callable[[], float] | None = None,
         logger: logging.Logger | None = None,
         loop_interval: float = 300.0,
+        persona_prompt: str = "",
     ) -> None:
         self._config = config
         self._llm = llm
@@ -141,6 +142,8 @@ class ProactiveScheduler:
         self._clock = clock or (lambda: datetime.now(CST).timestamp())
         self._logger = logger or _MODULE_LOGGER
         self.loop_interval = max(0.01, float(loop_interval))
+        # 主动开场白同样要带上人设，否则语气会和正常回复割裂
+        self._persona_prompt = (persona_prompt or "").strip()
 
         self._task: asyncio.Task | None = None
         self._closed = False
@@ -277,8 +280,14 @@ class ProactiveScheduler:
 
     async def _generate_opener(self, user_id: str, state: Any) -> str:
         nickname = str(getattr(state, "nickname", "") or "").strip() or _FALLBACK_NICKNAME
-        system_prompt = OPENER_SYSTEM_PROMPT.format(
+        task_prompt = OPENER_SYSTEM_PROMPT.format(
             nickname=nickname, max_chars=MAX_OPENER_CHARS
+        )
+        # 人设在前、本次任务在后：保留角色语气，同时让"主动开口"这条指令优先
+        system_prompt = (
+            f"{self._persona_prompt}\n\n---\n{task_prompt}"
+            if self._persona_prompt
+            else task_prompt
         )
         messages = self._context.build_messages(user_id, system_prompt)
         messages.append({"role": "user", "content": OPENER_NUDGE})
