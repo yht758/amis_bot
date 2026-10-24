@@ -161,6 +161,57 @@ python run.py --instance bot2
 删除前需要先「停止」，否则会拒绝。配置与数据会**移动到** `backups/instances/<id>-<时间戳>/`
 而不是直接删除，需要彻底清理时手动处理该目录。
 
+### 云服务器上的托管方式（重要）
+
+云端是长期在线场景，**bot 必须由 systemd 保活，而不是管理台的子进程**。否则管理台一更新，
+所有非 default 实例都会跟着被杀掉。
+
+每个实例对应一个 systemd 单元：
+
+| 实例 | 单元名 | 启动命令 |
+|---|---|---|
+| default | `im-bridge.service` | `run.py`（不带参数） |
+| 其它 | `im-bridge@<id>.service` | `run.py --instance <id>` |
+
+模板单元（只需建一次）：
+
+```ini
+# /etc/systemd/system/im-bridge@.service
+[Unit]
+Description=IM Bridge Bot Instance %i (QQ <-> LLM)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/im-bridge
+ExecStart=/opt/im-bridge/.venv/bin/python run.py --instance %i
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now im-bridge@bot2   # 首次启动时管理台会自动 enable
+```
+
+架构分层：
+
+```
+systemd    保活、开机自启、崩溃拉起（PPID=1）
+管理台     配置、启停指令、状态展示、日志查看（控制面）
+NapCat     每实例独立容器 + 独立端口
+LLM        共享密钥（根 .env）
+```
+
+管理台通过 `/api/instances/<id>/start|stop|restart` 下发 `systemctl` 指令，
+自身重启不会影响任何 bot 进程。
+
 ### 常见问题
 
 **实例列表显示「已停止」，但 bot 明明在跑**

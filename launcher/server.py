@@ -229,52 +229,74 @@ def _normalize_state(status: dict) -> dict:
     return status
 
 
-def _instance_status(instance_id: str) -> dict:
-    """取实例运行状态。
+_systemd_managers: dict[str, object] = {}
+_systemd_lock = threading.Lock()
 
-    server 模式下 default 实例由 systemd 托管，管理台只是观察者，
-    必须走 service_manager，否则会误报「已停止」。
+
+def _systemd_for(instance_id: str):
+    """每个实例对应一个 systemd 单元。
+
+    default 沿用 ``im-bridge.service``（无 --instance），其余实例走模板单元
+    ``im-bridge@<id>.service``（ExecStart 带 --instance %i）。
+    这样 bot 由 systemd 保活，管理台重启/更新不会带走任何实例。
     """
-    if SERVER_MODE and instance_id == "default":
-        return _normalize_state(bot_manager.status())
-    return _normalize_state(instance_manager.require_process(instance_id).status())
+    with _systemd_lock:
+        manager = _systemd_managers.get(instance_id)
+        if manager is None:
+            unit = "im-bridge" if instance_id == "default" else f"im-bridge@{instance_id}"
+            manager = service_mod.SystemdBotManager(unit=unit)
+            _systemd_managers[instance_id] = manager
+        return manager
+
+
+def _instance_backend(instance_id: str):
+    """状态 / 日志 / 启停的提供者。
+
+    server 模式下所有实例都由 systemd 托管，这里统一走 service_manager；
+    本地桌面模式才落到 Python 子进程。
+    """
+    if SERVER_MODE:
+        return _systemd_for(instance_id)
+    return instance_manager.require_process(instance_id)
+
+
+def _instance_status(instance_id: str) -> dict:
+    return _normalize_state(_instance_backend(instance_id).status())
 
 
 def _instance_lifecycle(instance_id: str, action: str) -> dict:
-    """启停转发。
-
-    server 模式下 default 实例由 systemd 托管，必须交给 service_manager，
-    否则会再拉起一个 bot 进程造成双开（抢 3001 端口 + 双份回复）。
-    """
-    if SERVER_MODE and instance_id == "default":
-        return getattr(bot_manager, action)()
-    return getattr(instance_manager, action)(instance_id)
+    return getattr(_instance_backend(instance_id), action)()
 
 
 def _bulk_lifecycle(action: str) -> dict:
-    """批量启停。server 模式下跳过 default（它归 systemd 管，避免双开）。"""
+    """批量启停。云端每个实例都是独立 systemd 单元，逐个下发。"""
     if not SERVER_MODE:
         return getattr(instance_manager, action)()
 
     started: list[str] = []
     stopped: list[str] = []
-    skipped: list[str] = ["default"]
+    skipped: list[str] = []
     failed: list[dict[str, str]] = []
 
     for instance in instance_config.list_instances():
         instance_id = instance["id"]
-        if instance_id == "default":
-            continue
         if action == "start_all" and not instance.get("enabled", True):
+            skipped.append(instance_id)
             continue
         try:
+            backend = _systemd_for(instance_id)
             if action == "start_all":
-                instance_manager.start(instance_id)
+                if backend.is_running():
+                    skipped.append(instance_id)
+                    continue
+                backend.start()
                 started.append(instance_id)
             else:
-                if instance_manager.process(instance_id).is_running():
-                    instance_manager.stop(instance_id)
-                    stopped.append(instance_id)
+                if not backend.is_running():
+                    skipped.append(instance_id)
+                    continue
+                backend.stop()
+                stopped.append(instance_id)
         except Exception as exc:  # noqa: BLE001
             failed.append({"id": instance_id, "error": str(exc)})
 
@@ -768,13 +790,12 @@ class ManagerHandler(BaseHTTPRequestHandler):
         if path == "/api/instances":
             items = instance_manager.list_instances()
             if SERVER_MODE:
-                # systemd 托管的 default 实例，用服务的真实状态覆盖进程探测结果
+                # 云端每个实例都是独立 systemd 单元，状态以 systemctl 为准
                 for item in items:
-                    if item["id"] == "default":
-                        try:
-                            item["status"] = _instance_status("default")
-                        except Exception:  # noqa: BLE001
-                            pass
+                    try:
+                        item["status"] = _instance_status(item["id"])
+                    except Exception as exc:  # noqa: BLE001
+                        item["status"] = {"state": "unknown", "error": str(exc)}
             self._send_json({"ok": True, "instances": items})
             return
         if path == "/api/instances/start-all":
@@ -800,7 +821,7 @@ class ManagerHandler(BaseHTTPRequestHandler):
                     return
                 if suffix == "/logs":
                     tail = int((query.get("tail") or ["300"])[0])
-                    lines = instance_manager.process(instance_id).snapshot(tail)
+                    lines = _instance_backend(instance_id).snapshot(tail)
                     self._send_json({"ok": True, "lines": lines})
                     return
                 if suffix == "/logs/stream":
@@ -1066,8 +1087,8 @@ class ManagerHandler(BaseHTTPRequestHandler):
             bot_manager.unsubscribe(subscriber)
 
     def _stream_instance_logs(self, instance_id: str) -> None:
-        """按实例推送日志：订阅者只收到该实例的输出，切换实例时前端重连即可。"""
-        process = instance_manager.process(instance_id)
+        """按实例推送日志。云端走 journal（systemd 单元），本地走进程管道。"""
+        process = _instance_backend(instance_id)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
