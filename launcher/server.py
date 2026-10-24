@@ -216,6 +216,77 @@ def _onebot_status() -> dict:
     return {"reachable": reachable, "host": "127.0.0.1", "port": port, "url": url}
 
 
+def _normalize_state(status: dict) -> dict:
+    """统一成前端要的 state 字段（BotManager 与 SystemdBotManager 结构不同）。"""
+    status = dict(status or {})
+    if status.get("running"):
+        state = "running"
+    elif status.get("exit_code") not in (None, 0):
+        state = "error"
+    else:
+        state = "stopped"
+    status["state"] = state
+    return status
+
+
+def _instance_status(instance_id: str) -> dict:
+    """取实例运行状态。
+
+    server 模式下 default 实例由 systemd 托管，管理台只是观察者，
+    必须走 service_manager，否则会误报「已停止」。
+    """
+    if SERVER_MODE and instance_id == "default":
+        return _normalize_state(bot_manager.status())
+    return _normalize_state(instance_manager.require_process(instance_id).status())
+
+
+def _instance_lifecycle(instance_id: str, action: str) -> dict:
+    """启停转发。
+
+    server 模式下 default 实例由 systemd 托管，必须交给 service_manager，
+    否则会再拉起一个 bot 进程造成双开（抢 3001 端口 + 双份回复）。
+    """
+    if SERVER_MODE and instance_id == "default":
+        return getattr(bot_manager, action)()
+    return getattr(instance_manager, action)(instance_id)
+
+
+def _bulk_lifecycle(action: str) -> dict:
+    """批量启停。server 模式下跳过 default（它归 systemd 管，避免双开）。"""
+    if not SERVER_MODE:
+        return getattr(instance_manager, action)()
+
+    started: list[str] = []
+    stopped: list[str] = []
+    skipped: list[str] = ["default"]
+    failed: list[dict[str, str]] = []
+
+    for instance in instance_config.list_instances():
+        instance_id = instance["id"]
+        if instance_id == "default":
+            continue
+        if action == "start_all" and not instance.get("enabled", True):
+            continue
+        try:
+            if action == "start_all":
+                instance_manager.start(instance_id)
+                started.append(instance_id)
+            else:
+                if instance_manager.process(instance_id).is_running():
+                    instance_manager.stop(instance_id)
+                    stopped.append(instance_id)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"id": instance_id, "error": str(exc)})
+
+    return {
+        "started": started,
+        "stopped": stopped,
+        "skipped": skipped,
+        "failed": failed,
+        "affected": len(started) + len(stopped),
+    }
+
+
 def _state(instance_id: str = "default") -> dict:
     if REMOTE_MODE:
         target = remote_mod.read_deploy_env()["host"]
@@ -224,8 +295,7 @@ def _state(instance_id: str = "default") -> dict:
     else:
         target = "127.0.0.1"
     try:
-        process = instance_manager.require_process(instance_id)
-        bot_status = process.status()
+        bot_status = _instance_status(instance_id)
     except Exception as exc:  # noqa: BLE001 - 实例缺失时仍要返回管理台自身状态
         bot_status = {"state": "unknown", "error": str(exc)}
     return {
@@ -696,13 +766,22 @@ class ManagerHandler(BaseHTTPRequestHandler):
 
         # ---- 多实例 ----
         if path == "/api/instances":
-            self._send_json({"ok": True, "instances": instance_manager.list_instances()})
+            items = instance_manager.list_instances()
+            if SERVER_MODE:
+                # systemd 托管的 default 实例，用服务的真实状态覆盖进程探测结果
+                for item in items:
+                    if item["id"] == "default":
+                        try:
+                            item["status"] = _instance_status("default")
+                        except Exception:  # noqa: BLE001
+                            pass
+            self._send_json({"ok": True, "instances": items})
             return
         if path == "/api/instances/start-all":
-            self._send_json({"ok": True, **instance_manager.start_all()})
+            self._send_json({"ok": True, **_bulk_lifecycle("start_all")})
             return
         if path == "/api/instances/stop-all":
-            self._send_json({"ok": True, **instance_manager.stop_all()})
+            self._send_json({"ok": True, **_bulk_lifecycle("stop_all")})
             return
         instance_match = re.fullmatch(r"/api/instances/([^/]+)(/[a-z-]+)?", path)
         if instance_match:
@@ -820,10 +899,10 @@ class ManagerHandler(BaseHTTPRequestHandler):
             self._send_json(_create_instance(payload))
             return
         if path == "/api/instances/start-all":
-            self._send_json({"ok": True, **instance_manager.start_all()})
+            self._send_json({"ok": True, **_bulk_lifecycle("start_all")})
             return
         if path == "/api/instances/stop-all":
-            self._send_json({"ok": True, **instance_manager.stop_all()})
+            self._send_json({"ok": True, **_bulk_lifecycle("stop_all")})
             return
         instance_match = re.fullmatch(r"/api/instances/([^/]+)(/[a-z-]+)?", path)
         if instance_match:
@@ -831,13 +910,13 @@ class ManagerHandler(BaseHTTPRequestHandler):
             suffix = instance_match.group(2) or ""
             try:
                 if suffix == "/start":
-                    self._send_json({"ok": True, **instance_manager.start(instance_id)})
+                    self._send_json({"ok": True, **_instance_lifecycle(instance_id, "start")})
                     return
                 if suffix == "/stop":
-                    self._send_json({"ok": True, **instance_manager.stop(instance_id)})
+                    self._send_json({"ok": True, **_instance_lifecycle(instance_id, "stop")})
                     return
                 if suffix == "/restart":
-                    self._send_json({"ok": True, **instance_manager.restart(instance_id)})
+                    self._send_json({"ok": True, **_instance_lifecycle(instance_id, "restart")})
                     return
                 if suffix == "/config":
                     self._send_json(_save_instance_config(instance_id, payload))
