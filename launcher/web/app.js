@@ -858,6 +858,17 @@
   }
 
   /* ---------------- 数据加载 ---------------- */
+  function instanceMode() {
+    return app.instancesSupported === true;
+  }
+
+  function normalizeInstanceState(raw) {
+    // 实例接口在标准字段外多返回 instance（当前实例 ID），其余结构与旧接口一致
+    const state = normalizeState(raw);
+    if (raw && raw.instance) state.instance = String(raw.instance);
+    return state;
+  }
+
   function normalizeState(raw) {
     const data = raw || {};
     const bot = data.bot || {};
@@ -1195,6 +1206,16 @@
 
   function logsEndpoint() {
     return app.instancesSupported ? instancePath('/logs') : '/api/logs';
+  }
+
+  // 启停：实例模式下走 /api/instances/{id}/{action}，否则回落到 /api/bot/{action}
+  function botActionEndpoint(action) {
+    return app.instancesSupported ? instancePath('/' + action) : '/api/bot/' + action;
+  }
+
+  // 日志 SSE：实例模式按实例频道订阅
+  function logStreamUrl() {
+    return app.instancesSupported ? instancePath('/logs/stream') : '/api/logs/stream';
   }
 
   function stateEndpoint() {
