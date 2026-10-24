@@ -3813,7 +3813,21 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot, { once: true });
+    document.addEventListener('DOMContentLoaded', () => {
+      // boot 抛错时不能静默：把原因写到页面上，并解除加载态，
+      // 否则用户只会看到永久转圈，无从判断是脚本崩了还是服务没起
+      boot().catch((error) => {
+        console.error('[boot] 初始化失败', error);
+        document.body.classList.remove('preload');
+        document.documentElement.dataset.appReady = '1';
+        const target = document.getElementById('offline-reason')
+          || document.getElementById('conn-sub');
+        if (target) {
+          target.textContent = '管理台脚本初始化失败：' + (error && error.message ? error.message : error);
+        }
+        document.documentElement.dataset.bootError = '1';
+      });
+    }, { once: true });
   } else {
     boot();
   }
